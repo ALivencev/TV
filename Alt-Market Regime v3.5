@@ -1,0 +1,196 @@
+//@version=6
+indicator("📊 Alt-Market Regime v3.5  (TOTAL3×OTHERS.D / ETHBTC)",
+     overlay=false, max_labels_count=500, max_lines_count=500)
+
+//========================= Inputs =========================
+src_tf_in   = input.timeframe("4H", "Source timeframe (symbols)")
+lenFast     = input.int(55,  "WMA Fast",  minval=1)
+lenSlow     = input.int(200, "WMA Slow",  minval=2)
+smoothK     = input.int(2,   "Smoothing (WMA on ratio)", minval=1)
+
+ratioClr    = input.color(color.rgb(207, 207, 207),  "Color: Ratio line")
+fastClr     = input.color(color.rgb(247, 235, 124), "Color: WMA Fast")
+slowClr     = input.color(color.rgb(254, 146, 22), "Color: WMA Slow")
+
+useBg       = input.bool(true, "Show background shading")
+bgOnClr     = input.color(color.new(color.teal, 0),   "BG: Risk-ON")
+bgOffClr    = input.color(color.new(color.rgb(6,25,28), 0), "BG: Risk-OFF")
+transpBg    = input.int(75, "BG transparency (0..100)", minval=0, maxval=100)
+
+showMarks   = input.bool(true, "Show regime/momentum markers")
+markSize    = input.string("small", "Marker size", options=["tiny","small","normal","large"])
+regUpClr    = input.color(color.rgb(231, 231, 231),  "Marker: Regime UP")
+regDnClr    = input.color(color.rgb(247, 124, 9),    "Marker: Regime DOWN")
+impUpClr    = input.color(color.rgb(20, 112, 102),   "Marker: Momentum UP")
+impDnClr    = input.color(color.rgb(0, 0, 0), "Marker: Momentum DOWN")
+
+// Divergences
+showDiv        = input.bool(true,  "Show divergences (price vs ratio)")
+divLeftRight   = input.int(4,      "Pivot left/right (bars)", minval=1, maxval=50)
+bullDivColor   = input.color(color.new(#ededed, 0), "Bullish divergence color")
+bearDivColor   = input.color(color.new(#ff7b00, 0), "Bearish divergence color")
+divLineWidth   = input.int(3,      "Divergence line width", minval=1, maxval=3)
+showDivLabels  = input.bool(true,  "Show divergence labels")
+// --- Reference pair (ratio denominator) ---
+refPair   = input.symbol("BINANCE:ETHBTC", "Reference pair (spot)")
+invertRef = input.bool(false, "Invert reference (use 1/x for BTCETH)")
+
+// RSI(Gaussian) marks
+krs_enable  = input.bool(true,  "Show RSI(Gaussian) OB/OS marks")
+krs_len     = input.int(14,     "RSI length", minval=1)
+krs_kernelN = input.int(11,     "Gaussian window (N)", minval=3, maxval=200)
+krs_sigma   = input.float(2.71828, "Gaussian sigma", minval=0.1, step=0.01)
+krs_OB      = input.int(50,     "RSI OB level", minval=50, maxval=100)
+krs_OS      = input.int(48,     "RSI OS level", minval=0,  maxval=50)
+pivotLR     = input.int(21,     "Pivot L/R for RSI marks", minval=1, maxval=50)
+colOB       = input.color(color.new(#e17c08, 0), "Color: OB mark")
+colOS       = input.color(color.new(#bdbdbd, 0), "Color: OS mark")
+rsiMarkPad  = input.float(0.25, "RSI mark offset (ratio units)")
+
+//========================= Helpers =========================
+f_norm_tf(tf) =>
+    string out = tf
+    out := tf == "12H" ? "720" :
+           tf == "8H"  ? "480" :
+           tf == "6H"  ? "360" :
+           tf == "4H"  ? "240" :
+           tf == "3H"  ? "180" :
+           tf == "2H"  ? "120" :
+           tf == "1H"  ?  "60"  : tf
+    out
+src_tf = f_norm_tf(src_tf_in)
+
+f_src(sym) => request.security(sym, src_tf, close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+f_gauss(src, N, sigma) =>
+    float num = 0.0, den = 0.0
+    for i = 0 to N - 1
+        w = math.exp(-(i * i) / (2.0 * sigma * sigma))
+        num += nz(src[i]) * w
+        den += w
+    den != 0 ? num / den : na
+
+//========================= Data ===============================
+total3  = f_src("CRYPTOCAP:TOTAL3")
+othersD = f_src("CRYPTOCAP:OTHERS.D")
+
+// Reference pair (из инпута refPair) + опция инверсии
+ref_raw = request.security(refPair, src_tf, close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+ref     = invertRef ? (ref_raw != 0 ? 1.0 / ref_raw : na) : ref_raw
+
+
+//========================= Ratio & regime ==================
+ratio_raw = ref != 0 ? (total3 * othersD) / ref : na
+base      = ta.wma(ratio_raw, lenSlow)
+ratioN    = base != 0 ? (ratio_raw / base - 1) * 100 : na
+ratio     = ta.wma(ratioN, smoothK)
+
+wmaFast   = ta.wma(ratio, lenFast)
+wmaSlow   = ta.wma(ratio, lenSlow)
+
+riskOn      = ratio > wmaSlow
+riskOff     = ratio < wmaSlow
+impulseUp   = ta.crossover(ratio, wmaFast)
+impulseDown = ta.crossunder(ratio, wmaFast)
+regimeUp    = ta.crossover(ratio, wmaSlow)
+regimeDown  = ta.crossunder(ratio, wmaSlow)
+
+//========================= Plots ===========================
+plot(ratio,   "Alt-Market Ratio %", color=ratioClr, linewidth=2)
+plot(wmaFast, "WMA Fast",           color=fastClr)
+plot(wmaSlow, "WMA Slow",           color=slowClr)
+
+// фиксированный размер маркеров (const-size workaround)
+// ---- Regime UP
+plotshape(showMarks and regimeUp   and markSize=="tiny",   title="Regime UP tiny",   style=shape.triangleup,   location=location.bottom, color=regUpClr, size=size.tiny)
+plotshape(showMarks and regimeUp   and markSize=="small",  title="Regime UP small",  style=shape.triangleup,   location=location.bottom, color=regUpClr, size=size.small)
+plotshape(showMarks and regimeUp   and markSize=="normal", title="Regime UP normal", style=shape.triangleup,   location=location.bottom, color=regUpClr, size=size.normal)
+plotshape(showMarks and regimeUp   and markSize=="large",  title="Regime UP large",  style=shape.triangleup,   location=location.bottom, color=regUpClr, size=size.large)
+
+// ---- Regime DOWN
+plotshape(showMarks and regimeDown and markSize=="tiny",   title="Regime DN tiny",   style=shape.triangledown, location=location.top,    color=regDnClr, size=size.tiny)
+plotshape(showMarks and regimeDown and markSize=="small",  title="Regime DN small",  style=shape.triangledown, location=location.top,    color=regDnClr, size=size.small)
+plotshape(showMarks and regimeDown and markSize=="normal", title="Regime DN normal", style=shape.triangledown, location=location.top,    color=regDnClr, size=size.normal)
+plotshape(showMarks and regimeDown and markSize=="large",  title="Regime DN large",  style=shape.triangledown, location=location.top,    color=regDnClr, size=size.large)
+
+// ---- Momentum UP
+plotshape(showMarks and impulseUp  and markSize=="tiny",   title="Momentum UP tiny", style=shape.circle,       location=location.bottom, color=impUpClr, size=size.tiny)
+plotshape(showMarks and impulseUp  and markSize=="small",  title="Momentum UP small",style=shape.circle,       location=location.bottom, color=impUpClr, size=size.small)
+plotshape(showMarks and impulseUp  and markSize=="normal", title="Momentum UP norm", style=shape.circle,       location=location.bottom, color=impUpClr, size=size.normal)
+plotshape(showMarks and impulseUp  and markSize=="large",  title="Momentum UP large",style=shape.circle,       location=location.bottom, color=impUpClr, size=size.large)
+
+// ---- Momentum DOWN
+plotshape(showMarks and impulseDown and markSize=="tiny",   title="Momentum DN tiny", style=shape.circle,      location=location.top,    color=impDnClr, size=size.tiny)
+plotshape(showMarks and impulseDown and markSize=="small",  title="Momentum DN small",style=shape.circle,      location=location.top,    color=impDnClr, size=size.small)
+plotshape(showMarks and impulseDown and markSize=="normal", title="Momentum DN norm", style=shape.circle,      location=location.top,    color=impDnClr, size=size.normal)
+plotshape(showMarks and impulseDown and markSize=="large",  title="Momentum DN large",style=shape.circle,      location=location.top,    color=impDnClr, size=size.large)
+
+
+// Background
+bgcolor(useBg ? (riskOn ? color.new(bgOnClr, transpBg) : color.new(bgOffClr, transpBg)) : na)
+
+//========================= Divergences ======================
+L = divLeftRight
+
+ph_price = ta.pivothigh(total3, L, L)
+pl_price = ta.pivotlow (total3, L, L)
+ph_ratio = ta.pivothigh(ratio,  L, L)
+pl_ratio = ta.pivotlow (ratio,  L, L)
+
+ph_price_idx = not na(ph_price) ? bar_index - L : na
+pl_price_idx = not na(pl_price) ? bar_index - L : na
+ph_ratio_idx = not na(ph_ratio) ? bar_index - L : na
+pl_ratio_idx = not na(pl_ratio) ? bar_index - L : na
+
+// прошлые подтверждённые пивоты (для линий)
+var float prev_ph_price = na
+var float prev_ph_ratio = na
+var int   prev_ph_ratio_idx = na
+
+var float prev_pl_price = na
+var float prev_pl_ratio = na
+var int   prev_pl_ratio_idx = na
+
+if showDiv
+    // Bearish: price HH, ratio LH
+    if not na(ph_price) and not na(ph_ratio)
+        if not na(prev_ph_price) and not na(prev_ph_ratio) and ph_price > prev_ph_price and ph_ratio < prev_ph_ratio
+            line.new(prev_ph_ratio_idx, prev_ph_ratio, ph_ratio_idx, ph_ratio,
+                     xloc=xloc.bar_index, extend=extend.none, color=bearDivColor, width=divLineWidth)
+            if showDivLabels
+                label.new(ph_ratio_idx, ph_ratio, "Bear div", xloc.bar_index, yloc.price,
+                          style=label.style_label_down, color=bearDivColor, textcolor=color.white)
+        prev_ph_price     := ph_price
+        prev_ph_ratio     := ph_ratio
+        prev_ph_ratio_idx := ph_ratio_idx
+
+    // Bullish: price LL, ratio HL
+    if not na(pl_price) and not na(pl_ratio)
+        if not na(prev_pl_price) and not na(prev_pl_ratio) and pl_price < prev_pl_price and pl_ratio > prev_pl_ratio
+            line.new(prev_pl_ratio_idx, prev_pl_ratio, pl_ratio_idx, pl_ratio,
+                     xloc=xloc.bar_index, extend=extend.none, color=bullDivColor, width=divLineWidth)
+            if showDivLabels
+                label.new(pl_ratio_idx, pl_ratio, "Bull div", xloc.bar_index, yloc.price,
+                          style=label.style_label_up, color=bullDivColor, textcolor=color.white)
+        prev_pl_price     := pl_price
+        prev_pl_ratio     := pl_ratio
+        prev_pl_ratio_idx := pl_ratio_idx
+
+//========================= RSI marks =======================
+rsiG      = f_gauss(ta.rsi(close, krs_len), krs_kernelN, krs_sigma)
+obAtPivot = rsiG[pivotLR] >= krs_OB
+osAtPivot = rsiG[pivotLR] <= krs_OS
+
+rph     = ta.pivothigh(ratio, pivotLR, pivotLR)
+rpl     = ta.pivotlow (ratio, pivotLR, pivotLR)
+rph_idx = not na(rph) ? bar_index - pivotLR : na
+rpl_idx = not na(rpl) ? bar_index - pivotLR : na
+
+if krs_enable
+    if not na(rph_idx) and obAtPivot
+        label.new(rph_idx, rph + rsiMarkPad, "OB", xloc.bar_index, yloc.price,
+                  color=colOB, style=label.style_label_down, textcolor=color.black, size=size.small)
+    if not na(rpl_idx) and osAtPivot
+        label.new(rpl_idx, rpl - rsiMarkPad, "OS", xloc.bar_index, yloc.price,
+                  color=colOS, style=label.style_label_up,   textcolor=color.black, size=size.small)
+
