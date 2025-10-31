@@ -1,0 +1,231 @@
+//@version=6
+indicator("📊 Alt-Market Regime v3.6 (TOTAL3×OTHERS.D / ref) + RS vs Market",
+     overlay=false, max_labels_count=500, max_lines_count=500)
+
+//==================== Inputs (UX) ====================
+showPrimary     = input.bool(true,  "Primary: core + WMAs + background")
+showSecondary   = input.bool(true,  "Secondary: divergences + RSI(Gauss) marks")
+
+// Core & MA
+src_tf_in   = input.timeframe("4H", "Source timeframe (symbols)")
+lenFast     = input.int(55,  "WMA Fast",  minval=1)
+lenSlow     = input.int(200, "WMA Slow",  minval=2)
+smoothK     = input.int(3,   "Smoothing (WMA on market ratio)", minval=1)
+
+// Режим панели
+coreMode    = input.string("Market ratio", "Core signal",
+               options=["Market ratio", "Chart vs Market"])
+// === Zero line (после coreMode!) ===
+showZero = input.bool(true, "Show zero line (RS vs Market)")
+zeroClr  = input.color(color.new(#018dff, 0), "Color: Zero line")
+// сам plot нулевой линии
+plot(coreMode == "Chart vs Market" and showZero ? 0 : na, title="Zero line", color=zeroClr, style=plot.style_linebr)
+// Референс-пара для рынка
+refPair     = input.symbol("BINANCE:ETHBTC", "Reference pair (spot)")
+invertRef   = input.bool(false, "Invert reference (use 1/x for BTCETH)")
+
+// Цвета линий и фона
+ratioClr    = input.color(color.new(color.white, 0),  "Color: Core line")
+fastClr     = input.color(color.new(#ffe16b, 0), "Color: WMA Fast")
+slowClr     = input.color(color.new(#f99500, 0), "Color: WMA Slow")
+useBg       = input.bool(true,  "Show background shading")
+bgOnClr     = input.color(color.rgb(0,120,110), "BG: Risk-ON color")
+bgOffClr    = input.color(color.rgb(18,18,22),  "BG: Risk-OFF color")
+transpBg    = input.int(75, "BG transparency (0..100)", minval=0, maxval=100)
+
+// Маркеры режима/импульса
+showMarks   = input.bool(true, "Show regime/momentum markers")
+markSizeStr = input.string("small", "Marker size", options=["tiny","small","normal","large"])
+regUpClr    = input.color(color.new(#a4a4a4, 0),  "Marker: Regime UP")
+regDnClr    = input.color(color.new(#f65600, 0),  "Marker: Regime DOWN")
+impUpClr    = input.color(color.new(#00756b, 0),  "Marker: Momentum UP")
+impDnClr    = input.color(color.new(#000000, 0),  "Marker: Momentum DOWN")
+
+// Дивергенции (цена рынка vs market core)
+showDiv        = input.bool(true,  "Show divergences (price vs market core)")
+divLeftRight   = input.int(2,      "Pivot left/right (bars)", minval=1, maxval=50)
+bullDivColor   = input.color(color.new(#86ebe1, 0), "Bullish divergence color")
+bearDivColor   = input.color(color.new(#ff7b00, 0), "Bearish divergence color")
+divLineWidth   = input.int(3,      "Divergence line width", minval=1, maxval=5)
+showDivLabels  = input.bool(true,  "Show divergence labels")
+divAlertsOnClose = input.bool(true,"Divergence alerts only on bar close")
+
+// RSI (Gaussian) метки на core
+krs_enable  = input.bool(true,  "Show RSI(Gaussian) OB/OS marks")
+krs_len     = input.int(14,     "RSI length", minval=1)
+krs_kernelN = input.int(11,     "Gaussian window (N)", minval=3, maxval=200)
+krs_sigma   = input.float(2.71828, "Gaussian sigma", minval=0.1, step=0.01)
+krs_OB      = input.int(60,     "RSI OB level", minval=50, maxval=100)
+krs_OS      = input.int(40,     "RSI OS level", minval=0,  maxval=50)
+pivotLR     = input.int(13,     "Pivot L/R for RSI marks", minval=1, maxval=50)
+rsiTol      = input.float(0.3,  "RSI tolerance", step=0.1)
+colOB       = input.color(color.new(#ff7b00, 0), "Color: OB mark")
+colOS       = input.color(color.new(#bdbdbd, 0), "Color: OS mark")
+rsiMarkPad  = input.float(0.25, "RSI mark offset (core units)")
+
+//==================== Helpers ====================
+f_norm_tf(tf) =>
+    string out = tf
+    out := tf == "12H" ? "720" :
+           tf == "8H"  ? "480" :
+           tf == "6H"  ? "360" :
+           tf == "4H"  ? "240" :
+           tf == "3H"  ? "180" :
+           tf == "2H"  ? "120" :
+           tf == "1H"  ?  "60"  : tf
+    out
+src_tf = f_norm_tf(src_tf_in)
+
+f_src(sym) =>
+    request.security(sym, src_tf, close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+f_gauss(src, N, sigma) =>
+    float num = 0.0, den = 0.0
+    for i = 0 to N-1
+        w = math.exp(-(i*i) / (2.0 * sigma * sigma))
+        num += nz(src[i]) * w
+        den += w
+    den != 0 ? num/den : na
+
+//==================== Data ====================
+total3  = f_src("CRYPTOCAP:TOTAL3")
+othersD = f_src("CRYPTOCAP:OTHERS.D")
+ref_raw = f_src(refPair)
+ref     = invertRef ? (ref_raw != 0 ? 1.0/ref_raw : na) : ref_raw
+
+//==================== Market ratio ====================
+m_ratio_raw = ref != 0 ? (total3 * othersD) / ref : na
+m_base      = ta.wma(m_ratio_raw, lenSlow)
+m_ratioN    = m_base != 0 ? (m_ratio_raw / m_base - 1) * 100 : na
+m_ratio     = ta.wma(m_ratioN, smoothK)
+
+//==================== Coin normalized % ====================
+p_base = ta.wma(close, lenSlow)
+p_norm = p_base != 0 ? (close / p_base - 1) * 100 : na
+
+//==================== Core signal (panel line) ====================
+core  = coreMode == "Chart vs Market" ? (p_norm - m_ratio) : m_ratio
+
+// Для обратной совместимости (дивергенции/RSI рассчитываются на рынке)
+ratio = m_ratio
+
+//==================== WMAs on core ====================
+wmaFast = ta.wma(core, lenFast)
+wmaSlow = ta.wma(core, lenSlow)
+
+riskOn      = core > wmaSlow
+riskOff     = core < wmaSlow
+impulseUp   = ta.crossover(core, wmaFast)
+impulseDown = ta.crossunder(core, wmaFast)
+regimeUp    = ta.crossover(core, wmaSlow)
+regimeDown  = ta.crossunder(core, wmaSlow)
+
+//==================== Primary layer ====================
+plot(showPrimary ? core    : na, "Core (ratio / RS vs Mkt)", color=ratioClr, linewidth=2)
+plot(showPrimary ? wmaFast : na, "WMA Fast", color=fastClr)
+plot(showPrimary ? wmaSlow : na, "WMA Slow", color=slowClr)
+
+// фикс. размер меток (const-size workaround)
+_szTiny   = markSizeStr=="tiny"
+_szSmall  = markSizeStr=="small"
+_szNormal = markSizeStr=="normal"
+_szLarge  = markSizeStr=="large"
+
+// Regime up
+plotshape(showPrimary and showMarks and regimeUp and _szTiny,   title="Regime UP tiny",   style=shape.triangleup,   location=location.bottom, color=regUpClr, size=size.tiny)
+plotshape(showPrimary and showMarks and regimeUp and _szSmall,  title="Regime UP small",  style=shape.triangleup,   location=location.bottom, color=regUpClr, size=size.small)
+plotshape(showPrimary and showMarks and regimeUp and _szNormal, title="Regime UP normal", style=shape.triangleup,   location=location.bottom, color=regUpClr, size=size.normal)
+plotshape(showPrimary and showMarks and regimeUp and _szLarge,  title="Regime UP large",  style=shape.triangleup,   location=location.bottom, color=regUpClr, size=size.large)
+// Regime down
+plotshape(showPrimary and showMarks and regimeDown and _szTiny,   title="Regime DN tiny",   style=shape.triangledown, location=location.top, color=regDnClr, size=size.tiny)
+plotshape(showPrimary and showMarks and regimeDown and _szSmall,  title="Regime DN small",  style=shape.triangledown, location=location.top, color=regDnClr, size=size.small)
+plotshape(showPrimary and showMarks and regimeDown and _szNormal, title="Regime DN normal", style=shape.triangledown, location=location.top, color=regDnClr, size=size.normal)
+plotshape(showPrimary and showMarks and regimeDown and _szLarge,  title="Regime DN large",  style=shape.triangledown, location=location.top, color=regDnClr, size=size.large)
+// Momentum up/down
+plotshape(showPrimary and showMarks and impulseUp  and _szTiny,   title="Momentum UP tiny",   style=shape.circle, location=location.bottom, color=impUpClr, size=size.tiny)
+plotshape(showPrimary and showMarks and impulseUp  and _szSmall,  title="Momentum UP small",  style=shape.circle, location=location.bottom, color=impUpClr, size=size.small)
+plotshape(showPrimary and showMarks and impulseUp  and _szNormal, title="Momentum UP normal", style=shape.circle, location=location.bottom, color=impUpClr, size=size.normal)
+plotshape(showPrimary and showMarks and impulseUp  and _szLarge,  title="Momentum UP large",  style=shape.circle, location=location.bottom, color=impUpClr, size=size.large)
+plotshape(showPrimary and showMarks and impulseDown and _szTiny,   title="Momentum DN tiny",   style=shape.circle, location=location.top, color=impDnClr, size=size.tiny)
+plotshape(showPrimary and showMarks and impulseDown and _szSmall,  title="Momentum DN small",  style=shape.circle, location=location.top, color=impDnClr, size=size.small)
+plotshape(showPrimary and showMarks and impulseDown and _szNormal, title="Momentum DN normal", style=shape.circle, location=location.top, color=impDnClr, size=size.normal)
+plotshape(showPrimary and showMarks and impulseDown and _szLarge,  title="Momentum DN large",  style=shape.circle, location=location.top, color=impDnClr, size=size.large)
+
+// BG
+bgcolor(showPrimary and useBg ? (riskOn ? color.new(bgOnClr, transpBg) : color.new(bgOffClr, transpBg)) : na)
+
+//========================= Secondary: Divergences =================
+L = divLeftRight
+
+ph_price = ta.pivothigh(total3, L, L)
+pl_price = ta.pivotlow (total3, L, L)
+ph_core  = ta.pivothigh(core,   L, L)   // core — твоя основная линия (ratio/RS)
+pl_core  = ta.pivotlow (core,   L, L)
+
+ph_price_idx = not na(ph_price) ? bar_index - L : na
+pl_price_idx = not na(pl_price) ? bar_index - L : na
+ph_core_idx  = not na(ph_core)  ? bar_index - L : na
+pl_core_idx  = not na(pl_core)  ? bar_index - L : na
+
+// Персистентные "прошлые" пивоты (ОБЯЗАТЕЛЬНО укажи тип для каждой!)
+var float prev_ph_price = na
+var float prev_ph_core  = na
+var int   prev_ph_core_idx = na
+
+var float prev_pl_price = na
+var float prev_pl_core  = na
+var int   prev_pl_core_idx = na
+
+if showSecondary and showDiv
+    // Bearish: HH на цене (TOTAL3) и LH на core
+    if not na(ph_price) and not na(ph_core)
+        if not na(prev_ph_price) and not na(prev_ph_core) and ph_price > prev_ph_price and ph_core < prev_ph_core
+            line.new(prev_ph_core_idx, prev_ph_core, ph_core_idx, ph_core,
+         xloc=xloc.bar_index, extend=extend.none, color=bearDivColor, width=divLineWidth)
+
+            if showDivLabels
+                label.new(ph_core_idx, ph_core, "Bear div", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=bearDivColor, textcolor=color.white)
+        // обновляем "прошлые"
+        prev_ph_price := ph_price
+        prev_ph_core  := ph_core
+        prev_ph_core_idx := ph_core_idx
+
+    // Bullish: LL на цене и HL на core
+    if not na(pl_price) and not na(pl_core)
+        if not na(prev_pl_price) and not na(prev_pl_core) and pl_price < prev_pl_price and pl_core > prev_pl_core
+            line.new(prev_pl_core_idx, prev_pl_core, pl_core_idx, pl_core, xloc=xloc.bar_index, extend=extend.none, color=bullDivColor, width=divLineWidth)
+            if showDivLabels
+                label.new(pl_core_idx, pl_core, "Bull div", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up, color=bullDivColor, textcolor=color.white)
+        // обновляем "прошлые"
+        prev_pl_price := pl_price
+        prev_pl_core  := pl_core
+        prev_pl_core_idx := pl_core_idx
+
+
+//==================== Secondary: RSI(Gauss) marks ====================
+rsiG = f_gauss(ta.rsi(core, krs_len), krs_kernelN, krs_sigma)
+obAtPivot = not na(rsiG[pivotLR]) and rsiG[pivotLR] >= krs_OB - rsiTol
+osAtPivot = not na(rsiG[pivotLR]) and rsiG[pivotLR] <= krs_OS + rsiTol
+
+rph     = ta.pivothigh(core, pivotLR, pivotLR)
+rpl     = ta.pivotlow (core, pivotLR, pivotLR)
+rph_idx = not na(rph) ? bar_index - pivotLR : na
+rpl_idx = not na(rpl) ? bar_index - pivotLR : na
+
+if showSecondary and krs_enable
+    if not na(rph_idx) and obAtPivot
+        label.new(rph_idx, rph + rsiMarkPad, "OB", xloc.bar_index, yloc.price, color=colOB, style=label.style_label_down, textcolor=color.black)
+    if not na(rpl_idx) and osAtPivot
+        label.new(rpl_idx, rpl - rsiMarkPad, "OS", xloc.bar_index, yloc.price, color=colOS, style=label.style_label_up,   textcolor=color.black)
+
+//==================== Alerts ====================
+f_ok(cond) => (divAlertsOnClose ? barstate.isconfirmed : true) and cond
+bullDivPulse = showSecondary and showDiv and not na(prev_pl_price) and not na(prev_pl_core) and not na(pl_price) and not na(pl_core) and (pl_price < prev_pl_price and pl_core > prev_pl_core)
+bearDivPulse = showSecondary and showDiv and not na(prev_ph_price) and not na(prev_ph_core) and not na(ph_price) and not na(ph_core) and (ph_price > prev_ph_price and ph_core < prev_ph_core)
+
+alertcondition(regimeUp,    "Regime UP",   "⚡ Regime UP — core crossed above Slow WMA")
+alertcondition(regimeDown,  "Regime DOWN", "🔻 Regime DOWN — core crossed below Slow WMA")
+alertcondition(impulseUp,   "Momentum UP", "🟢 Momentum UP — core crossed above Fast WMA")
+alertcondition(impulseDown, "Momentum DN", "🟣 Momentum DOWN — core crossed below Fast WMA")
+alertcondition(f_ok(bullDivPulse), "Bullish Divergence", "🟢 Bullish divergence — TOTAL3 makes LL while CORE makes HL")
+alertcondition(f_ok(bearDivPulse), "Bearish Divergence", "🔴 Bearish divergence — TOTAL3 makes HH while CORE makes LH")
