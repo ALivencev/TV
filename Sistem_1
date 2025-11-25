@@ -1,0 +1,595 @@
+//@version=6
+indicator("MACD/BB/RSI System v2.3", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+//----------------------------------------------------
+// MACD
+//----------------------------------------------------
+groupMacd = "MACD"
+macdFastLen   = input.int(12, "MACD Fast",   group = groupMacd, minval = 1)
+macdSlowLen   = input.int(26, "MACD Slow",   group = groupMacd, minval = 1)
+macdSignalLen = input.int(9,  "MACD Signal", group = groupMacd, minval = 1)
+macdNearPct   = input.float(15.0, "MACD distance to signal (%)", group = groupMacd, minval = 0.0, step = 0.1)
+macdSwingMinPct = input.float(0.0, "Min MACD swing distance before cross (%)", group = groupMacd, minval = 0.0, step = 0.1)
+
+
+//----------------------------------------------------
+// Bollinger Bands
+//----------------------------------------------------
+groupBB   = "Bollinger Bands"
+bbLength  = input.int(20, "BB Length", group = groupBB, minval = 1)
+bbMult    = input.float(2.0, "BB Multiplier", group = groupBB, step = 0.1)
+bbProxPct = input.float(2.5, "Price range around BB basis (%)", group = groupBB, minval = 0.1, step = 0.1)
+showBB    = input.bool(true, "Show BB lines", group = groupBB)
+
+//----------------------------------------------------
+// RSI
+//----------------------------------------------------
+groupRSI = "RSI"
+rsiLength    = input.int(14, "RSI Length", group = groupRSI, minval = 1)
+// Лонг-зона
+rsiLongMin   = input.float(20.0, "RSI long min",  group = groupRSI, step = 0.5)
+rsiLongMax   = input.float(40.0, "RSI long max",  group = groupRSI, step = 0.5)
+// BE-зона
+rsiBEmin     = input.float(60.0, "RSI BE min",    group = groupRSI, step = 0.5)
+rsiBEmax     = input.float(70.0, "RSI BE max",    group = groupRSI, step = 0.5)
+// Full Exit-зона
+rsiExitMin   = input.float(70.0, "RSI full-exit min", group = groupRSI, step = 0.5)
+rsiExitMax   = input.float(80.0, "RSI full-exit max", group = groupRSI, step = 0.5)
+// Шорт-зона (для основного сетапа)
+rsiShortMin  = input.float(60.0, "RSI short min", group = groupRSI, step = 0.5)
+rsiShortMax  = input.float(80.0, "RSI short max", group = groupRSI, step = 0.5)
+// Фильтры RSI для WMA+BB точек
+wmaBbRsiLongMax  = input.float(40.0, "WMA+BB LONG dot max RSI",  group = groupRSI, step = 0.5)
+wmaBbRsiShortMin = input.float(62.0, "WMA+BB SHORT dot min RSI", group = groupRSI, step = 0.5)
+rsiSmoothLen = input.int(1, "RSI smoothing length", group = groupRSI, minval = 1)
+
+
+//----------------------------------------------------
+// Risk / Levels (логика, без линий)
+//----------------------------------------------------
+groupRisk = "Risk / Levels"
+stopBelowLowerPct    = input.float(1.5, "Stop below lower BB (%)", group = groupRisk, minval = 0.1, step = 0.1)
+fullExitOverUpperPct = input.float(1.0, "Full exit when price above upper BB by (%)", group = groupRisk, minval = 0.1, step = 0.1)
+
+//----------------------------------------------------
+// Entry Zones (по MACD/BB/RSI) — для ЛОНГОВ
+//----------------------------------------------------
+groupZones = "Entry Zones (Long)"
+
+// Zone 1: 2 из 3 — только рамка, без заливки
+zone1Show        = input.bool(true,  "Show Zone 1 (2 of 3)", group = groupZones)
+zone1BorderColor = input.color(color.new(color.teal, 0), "Zone 1 border color", group = groupZones)
+zone1BorderWidth = input.int(2, "Zone 1 border width", group = groupZones, minval = 0, maxval = 5)
+
+// Zone 2: 3 из 3 — рамка + (опциональная) заливка
+zone2Show         = input.bool(true,  "Show Zone 2 (3 of 3)",      group = groupZones)
+zone2BorderColor  = input.color(color.new(color.teal, 0), "Zone 2 border color", group = groupZones)
+zone2BorderWidth  = input.int(1, "Zone 2 border width", group = groupZones, minval = 0, maxval = 5)
+zone2FillEnabled  = input.bool(true, "Zone 2 fill enabled", group = groupZones)
+zone2FillColorInp = input.color(color.new(color.teal, 60), "Zone 2 fill color", group = groupZones)
+zone2FillColor    = zone2FillEnabled ? zone2FillColorInp : na
+
+//----------------------------------------------------
+// Visuals: RSI-маркеры, MACD-крестики, BE/Exit лейблы, WMA+BB точки
+//----------------------------------------------------
+groupVis = "Visuals"
+
+showRsiMarkers       = input.bool(true, "Show RSI markers", group = groupVis)
+
+showMacdCrossMarkers = input.bool(true, "Show MACD cross markers", group = groupVis)
+macdCrossOffsetTicks = input.float(200.0, "MACD cross offset (ticks)", group = groupVis, minval = 0.0, step = 1.0)
+macdCrossSizeInput   = input.string("small", "MACD cross size", options = ["tiny", "small", "normal"], group = groupVis)
+macdCrossSize        = macdCrossSizeInput == "tiny" ? size.tiny : macdCrossSizeInput == "small" ? size.small : size.normal
+
+beLabelColorLong   = input.color(color.new(color.green, 0), "BE label color (Long)",  group = groupVis)
+beLabelColorShort  = input.color(color.new(color.red,   0), "BE label color (Short)", group = groupVis)
+
+beLabelOffsetLong  = input.float(50.0, "BE offset (ticks) Long",  group = groupVis, minval = 0.0, step = 1.0)
+beLabelOffsetShort = input.float(50.0, "BE offset (ticks) Short", group = groupVis, minval = 0.0, step = 1.0)
+beLabelShapeInput  = input.string("Arrow Up", "BE label shape", options = ["Arrow Up", "Triangle Up", "Text Only"], group = groupVis)
+fullExitLabelColor      = input.color(color.new(color.red, 0), "Full Exit label color", group = groupVis)
+fullExitLabelShapeInput = input.string("Arrow Down", "Full Exit label shape", options = ["Arrow Down", "Triangle Down", "Text Only"], group = groupVis)
+
+showWmaBbDots       = input.bool(true,  "Show WMA+BB dots",           group = groupVis)
+wmaBbDotColorLong   = input.color(color.new(color.lime, 0), "WMA+BB dot color (below bar)", group = groupVis)
+wmaBbDotColorShort  = input.color(color.new(color.red,  0), "WMA+BB dot color (above bar)", group = groupVis)
+
+// стили BE / Exit
+beLabelStyle = beLabelShapeInput == "Arrow Up"   ? label.style_label_up  :
+               beLabelShapeInput == "Triangle Up"? label.style_triangleup :
+               label.style_none
+
+fullExitLabelStyle = fullExitLabelShapeInput == "Arrow Down"    ? label.style_label_down  :
+                     fullExitLabelShapeInput == "Triangle Down" ? label.style_triangledown :
+                     label.style_none
+
+//----------------------------------------------------
+// TEMA + RSI EMA
+//----------------------------------------------------
+groupTema = "TEMA / RSI EMA"
+
+temaLen   = input.int(90, "TEMA Length", group = groupTema, minval = 1)
+temaColor = input.color(color.new(#000000, 0), "TEMA Color", group = groupTema)
+temaWidth = input.int(4, "TEMA Width", group = groupTema, minval = 1, maxval = 10)
+
+rsiEmaLen = input.int(9, "RSI EMA Length", group = groupTema, minval = 1)
+
+// Зоны WMA+RSI
+showWmaRsiLongBox      = input.bool(true,  "Show WMA+RSI LONG zones",  group = groupTema)
+wmaRsiLongFillColor    = input.color(color.new(color.teal, 85),  "WMA+RSI LONG fill",        group = groupTema)
+wmaRsiLongBorderColor  = input.color(color.new(color.teal, 0), "WMA+RSI LONG border",        group = groupTema)
+wmaRsiLongBorderWidth  = input.int(2, "WMA+RSI LONG border width",     group = groupTema, minval = 1, maxval = 5)
+wmaRsiLongTextColor    = input.color(color.white, "WMA+RSI LONG text color", group = groupTema)
+
+showWmaRsiShortBox     = input.bool(true,  "Show WMA+RSI SHORT zones", group = groupTema)
+wmaRsiShortFillColor   = input.color(color.new(color.red, 85),  "WMA+RSI SHORT fill",        group = groupTema)
+wmaRsiShortBorderColor = input.color(color.new(color.red, 0), "WMA+RSI SHORT border",        group = groupTema)
+wmaRsiShortBorderWidth = input.int(2, "WMA+RSI SHORT border width",    group = groupTema, minval = 1, maxval = 5)
+wmaRsiShortTextColor   = input.color(color.white, "WMA+RSI SHORT text color", group = groupTema)
+
+//----------------------------------------------------
+// Фиксированные отступы и размеры RSI-маркеров (только в коде)
+//----------------------------------------------------
+rsiTriOffsetAboveTicks  = 50.0   // треугольник над баром
+rsiTriOffsetBelowTicks  = 50.0   // треугольник под баром
+rsiTextExtraOffsetTicks = 30.0   // расстояние текст → треугольник
+
+rsiTriangleSize = size.tiny      // размер треугольника
+rsiTextSize     = size.small     // размер цифры над треугольником
+
+//----------------------------------------------------
+// Базовые расчёты индикаторов
+//----------------------------------------------------
+// MACD
+macdFast   = ta.ema(close, macdFastLen)
+macdSlow   = ta.ema(close, macdSlowLen)
+macdValue  = macdFast - macdSlow
+macdSignal = ta.ema(macdValue, macdSignalLen)
+
+// BB
+bbBasis = ta.sma(close, bbLength)
+bbDev   = bbMult * ta.stdev(close, bbLength)
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+
+// RSI + RSI EMA
+rsiRaw = ta.rsi(close, rsiLength)
+rsi    = rsiSmoothLen > 1 ? ta.ema(rsiRaw, rsiSmoothLen) : rsiRaw
+rsiEma = ta.ema(rsi, rsiEmaLen)
+
+// TEMA (Triple EMA) по цене
+ema1    = ta.ema(close, temaLen)
+ema2    = ta.ema(ema1,  temaLen)
+ema3    = ta.ema(ema2,  temaLen)
+temaLine = 3.0 * (ema1 - ema2) + ema3
+
+// Показываем линии BB и TEMA
+plot(showBB ? bbBasis : na, "BB Basis", color = color.new(#9c9c9c, 0), linewidth = 2)
+plot(showBB ? bbUpper : na, "BB Upper", color = color.new(#7b7b7b, 0), linewidth = 1)
+plot(showBB ? bbLower : na, "BB Lower", color = color.new(#787878, 0), linewidth = 1)
+plot(temaLine, "TEMA", color = temaColor, linewidth = temaWidth)
+
+
+//----------------------------------------------------
+// MACD условия и крестики
+//----------------------------------------------------
+macdCrossUpBelowZero   = ta.crossover(macdValue, macdSignal)  and macdValue < 0 and macdSignal < 0
+macdCrossDownAboveZero = ta.crossunder(macdValue, macdSignal) and macdValue > 0 and macdSignal > 0
+
+signalSafe  = nz(macdSignal, 0.000001)
+macdDistPct = math.abs(macdSignal - macdValue) / math.abs(signalSafe) * 100.0
+// Максимальный отрыв MACD от сигнальной внутри текущего "крылa"
+var float macdSwingMaxPct = 0.0
+
+sameSide = (macdValue > macdSignal and macdValue[1] > macdSignal[1]) or (macdValue < macdSignal and macdValue[1] < macdSignal[1])
+
+if sameSide
+    macdSwingMaxPct := math.max(macdSwingMaxPct, macdDistPct)
+else
+    // начнётся новое "крыло" после пересечения → сбрасываем максимум
+    macdSwingMaxPct := macdDistPct
+// "Сильные" кроссы: перед пересечением был достаточный отрыв
+strongBullCross = macdCrossUpBelowZero   and macdSwingMaxPct >= macdSwingMinPct
+strongBearCross = macdCrossDownAboveZero and macdSwingMaxPct >= macdSwingMinPct
+
+
+// если macdNearPct == 0 → near-сигналы выключены, только чистые кроссы
+useNear = macdNearPct > 0.0
+
+macdNearBelowZero = useNear and macdValue < macdSignal and macdValue < 0 and macdSignal < 0 and macdDistPct <= macdNearPct
+macdNearAboveZero = useNear and macdValue > macdSignal and macdValue > 0 and macdSignal > 0 and macdDistPct <= macdNearPct
+
+macdLongCond  = macdCrossUpBelowZero   or macdNearBelowZero
+macdShortCond = macdCrossDownAboveZero or macdNearAboveZero
+
+if showMacdCrossMarkers
+    oneTick = syminfo.mintick
+    // зелёный крестик только если swing был достаточно широкий
+    if strongBullCross
+        crossY = low - oneTick * macdCrossOffsetTicks
+        label.new(bar_index, crossY, "",
+                  style     = label.style_cross,
+                  color     = color.new(color.lime, 0),
+                  textcolor = color.new(color.lime, 0),
+                  size      = macdCrossSize)
+
+    // красный крестик только если swing был достаточно широкий
+    if strongBearCross
+        crossY = high + oneTick * macdCrossOffsetTicks
+        label.new(bar_index, crossY, "",
+                  style     = label.style_cross,
+                  color     = color.new(color.red, 0),
+                  textcolor = color.new(color.red, 0),
+                  size      = macdCrossSize)
+
+
+//-----------------------------
+// TEMA + BB точки (с фильтром по RSI, без блоков)
+//-----------------------------
+wmaBbLongDot  = showWmaBbDots and low  <= temaLine and low  <= bbLower and rsi <= wmaBbRsiLongMax
+wmaBbShortDot = showWmaBbDots and high >= temaLine and high >= bbUpper and rsi >= wmaBbRsiShortMin
+
+
+plotshape(wmaBbLongDot,  title = "WMA+BB below",
+          style = shape.circle, location = location.belowbar,
+          color = wmaBbDotColorLong,  size = size.tiny)
+
+plotshape(wmaBbShortDot, title = "WMA+BB above",
+          style = shape.circle, location = location.abovebar,
+          color = wmaBbDotColorShort, size = size.tiny)
+
+
+//----------------------------------------------------
+// Основные условия сетапов
+//----------------------------------------------------
+// Цена около BB Basis
+bbDeviationPct = bbBasis != 0.0 ? math.abs(close - bbBasis) / math.abs(bbBasis) * 100.0 : 0.0
+bbCond         = bbDeviationPct <= bbProxPct
+
+// RSI-условия для лонга и шорта
+rsiLongCond  = rsi >= rsiLongMin  and rsi <= rsiLongMax
+rsiShortCond = rsi >= rsiShortMin and rsi <= rsiShortMax
+
+// Счётчики условий
+condCountLong  = (macdLongCond  ? 1 : 0) + (bbCond ? 1 : 0) + (rsiLongCond  ? 1 : 0)
+condCountShort = (macdShortCond ? 1 : 0) + (bbCond ? 1 : 0) + (rsiShortCond ? 1 : 0)
+
+//------------------------------
+// Зоны входа по MACD/BB/RSI (только LONG)
+//------------------------------
+var box zone1LongBox = na
+var box zone2LongBox = na
+
+// Zone 1: 2 из 3 условий, только рамка (без заливки)
+inZone1Long     = condCountLong >= 2
+inZone1LongPrev = inZone1Long[1]
+
+if zone1Show
+    if inZone1Long and not inZone1LongPrev
+        zone1LongBox := box.new(bar_index, high, bar_index, low, bgcolor = na, border_color = zone1BorderColor, border_width = zone1BorderWidth)
+    else if inZone1Long and inZone1LongPrev and not na(zone1LongBox)
+        box.set_right(zone1LongBox, bar_index)
+        box.set_top(zone1LongBox, math.max(box.get_top(zone1LongBox), high))
+        box.set_bottom(zone1LongBox, math.min(box.get_bottom(zone1LongBox), low))
+    else if not inZone1Long and inZone1LongPrev
+        zone1LongBox := na
+
+// Zone 2: 3 из 3 условий, рамка + опциональная заливка
+inZone2Long     = condCountLong == 3
+inZone2LongPrev = inZone2Long[1]
+
+if zone2Show
+    if inZone2Long and not inZone2LongPrev
+        zone2LongBox := box.new(bar_index, high, bar_index, low, bgcolor = zone2FillColor, border_color = zone2BorderColor, border_width = zone2BorderWidth)
+    else if inZone2Long and inZone2LongPrev and not na(zone2LongBox)
+        box.set_right(zone2LongBox, bar_index)
+        box.set_top(zone2LongBox, math.max(box.get_top(zone2LongBox), high))
+        box.set_bottom(zone2LongBox, math.min(box.get_bottom(zone2LongBox), low))
+    else if not inZone2Long and inZone2LongPrev
+        zone2LongBox := na
+
+//----------------------------------------------------
+// TEMA + RSI EMA зоны LONG / SHORT с допуском 1 бара
+//----------------------------------------------------
+wmaRsiLongCond  = close < temaLine and rsi < rsiEma and rsi >= 20 and rsi <= 35
+wmaRsiShortCond = close > temaLine and rsi > rsiEma and rsi >= 65 and rsi <= 80
+
+
+var box   wmaRsiLongBox    = na
+var label wmaRsiLongLabel  = na
+var box   wmaRsiShortBox   = na
+var label wmaRsiShortLabel = na
+
+// LONG состояние
+var bool wmaRsiInLState = false
+var int  wmaRsiLongMiss = 0
+
+if showWmaRsiLongBox
+    if wmaRsiLongCond
+        wmaRsiInLState := true
+        wmaRsiLongMiss := 0
+    else
+        if wmaRsiInLState
+            wmaRsiLongMiss += 1
+            if wmaRsiLongMiss >= 2
+                wmaRsiInLState := false
+                wmaRsiLongMiss := 0
+        else
+            wmaRsiLongMiss := 0
+else
+    wmaRsiInLState := false
+    wmaRsiLongMiss := 0
+
+wmaRsiInL     = wmaRsiInLState
+wmaRsiInLPrev = wmaRsiInL[1]
+
+// SHORT состояние
+var bool wmaRsiInSState = false
+var int  wmaRsiShortMiss = 0
+
+if showWmaRsiShortBox
+    if wmaRsiShortCond
+        wmaRsiInSState  := true
+        wmaRsiShortMiss := 0
+    else
+        if wmaRsiInSState
+            wmaRsiShortMiss += 1
+            if wmaRsiShortMiss >= 2
+                wmaRsiInSState  := false
+                wmaRsiShortMiss := 0
+        else
+            wmaRsiShortMiss := 0
+else
+    wmaRsiInSState  := false
+    wmaRsiShortMiss := 0
+
+wmaRsiInS     = wmaRsiInSState
+wmaRsiInSPrev = wmaRsiInS[1]
+
+// Рисуем LONG-бокс
+if wmaRsiInL and not wmaRsiInLPrev
+    wmaRsiLongBox := box.new(bar_index, high, bar_index, low,
+                             bgcolor      = wmaRsiLongFillColor,
+                             border_color = wmaRsiLongBorderColor,
+                             border_width = wmaRsiLongBorderWidth)
+
+    midY = (high + low) / 2.0
+    wmaRsiLongLabel := label.new(bar_index, midY, "wma\n+ rsi\n= long",
+                                 style     = label.style_label_center,
+                                 textcolor = wmaRsiLongTextColor,
+                                 color     = color.new(color.black, 90),
+                                 size      = size.small)
+else if wmaRsiInL and wmaRsiInLPrev and not na(wmaRsiLongBox)
+    box.set_right(wmaRsiLongBox, bar_index)
+    box.set_top(wmaRsiLongBox,    math.max(box.get_top(wmaRsiLongBox), high))
+    box.set_bottom(wmaRsiLongBox, math.min(box.get_bottom(wmaRsiLongBox), low))
+
+    if not na(wmaRsiLongLabel)
+        topL    = box.get_top(wmaRsiLongBox)
+        bottomL = box.get_bottom(wmaRsiLongBox)
+        midYL   = (topL + bottomL) / 2.0
+        leftL   = box.get_left(wmaRsiLongBox)
+        rightL  = box.get_right(wmaRsiLongBox)
+        midBarL = int((leftL + rightL) / 2.0)
+        label.set_x(wmaRsiLongLabel, midBarL)
+        label.set_y(wmaRsiLongLabel, midYL)
+else if not wmaRsiInL and wmaRsiInLPrev
+    wmaRsiLongBox   := na
+    wmaRsiLongLabel := na
+
+// Рисуем SHORT-бокс
+if wmaRsiInS and not wmaRsiInSPrev
+    wmaRsiShortBox := box.new(bar_index, high, bar_index, low,
+                              bgcolor      = wmaRsiShortFillColor,
+                              border_color = wmaRsiShortBorderColor,
+                              border_width = wmaRsiShortBorderWidth)
+
+    midY = (high + low) / 2.0
+    wmaRsiShortLabel := label.new(bar_index, midY, "wma\n+ rsi\n= short",
+                                  style     = label.style_label_center,
+                                  textcolor = wmaRsiShortTextColor,
+                                  color     = color.new(color.black, 90),
+                                  size      = size.small)
+else if wmaRsiInS and wmaRsiInSPrev and not na(wmaRsiShortBox)
+    box.set_right(wmaRsiShortBox, bar_index)
+    box.set_top(wmaRsiShortBox,    math.max(box.get_top(wmaRsiShortBox), high))
+    box.set_bottom(wmaRsiShortBox, math.min(box.get_bottom(wmaRsiShortBox), low))
+
+    if not na(wmaRsiShortLabel)
+        topS    = box.get_top(wmaRsiShortBox)
+        bottomS = box.get_bottom(wmaRsiShortBox)
+        midYS   = (topS + bottomS) / 2.0
+        leftS   = box.get_left(wmaRsiShortBox)
+        rightS  = box.get_right(wmaRsiShortBox)
+        midBarS = int((leftS + rightS) / 2.0)
+        label.set_x(wmaRsiShortLabel, midBarS)
+        label.set_y(wmaRsiShortLabel, midYS)
+else if not wmaRsiInS and wmaRsiInSPrev
+    wmaRsiShortBox   := na
+    wmaRsiShortLabel := na
+
+//----------------------------------------------------
+// Логика setup / BE / Full Exit + Flip Long/Short
+//----------------------------------------------------
+var bool  longSetupActive  = false
+var bool  shortSetupActive = false
+var bool  beMovedLong      = false
+var bool  beMovedShort     = false
+
+var float longEntryPrice  = na
+var float longStopPrice   = na
+var float longTp1Price    = na
+var float longTp2Price    = na
+
+var float shortEntryPrice = na
+var float shortStopPrice  = na
+var float shortTp1Price   = na
+var float shortTp2Price   = na
+
+// новые сетапы
+longSetupNew  = condCountLong  == 3
+shortSetupNew = condCountShort == 3
+
+// Flip-режим
+flipToShort = shortSetupNew and longSetupActive
+flipToLong  = longSetupNew  and shortSetupActive
+
+// FLIP Long -> Short
+if flipToShort
+    longSetupActive := false
+    beMovedLong     := false
+    label.new(bar_index, close, "Flip",
+              style     = label.style_label_down,
+              textcolor = color.white,
+              color     = color.new(color.orange, 0),
+              size      = size.small)
+
+    shortSetupActive := true
+    beMovedShort     := false
+    shortEntryPrice  := close
+    shortStopPrice   := bbUpper * (1.0 + stopBelowLowerPct / 100.0)
+    riskShort        = shortStopPrice - shortEntryPrice
+    shortTp1Price    := shortEntryPrice - riskShort * 1.0
+    shortTp2Price    := shortEntryPrice - riskShort * 2.0
+
+// FLIP Short -> Long
+if flipToLong
+    shortSetupActive := false
+    beMovedShort     := false
+    label.new(bar_index, close, "Flip",
+              style     = label.style_label_up,
+              textcolor = color.white,
+              color     = color.new(color.orange, 0),
+              size      = size.small)
+
+    longSetupActive := true
+    beMovedLong     := false
+    longEntryPrice  := close
+    longStopPrice   := bbLower * (1.0 - stopBelowLowerPct / 100.0)
+    riskLong        = longEntryPrice - longStopPrice
+    longTp1Price    := longEntryPrice + riskLong * 1.0
+    longTp2Price    := longEntryPrice + riskLong * 2.0
+
+// Открытие новых сетапов, если никто не активен и не было Flip
+if not longSetupActive and not shortSetupActive and not flipToLong and not flipToShort
+    if longSetupNew
+        longSetupActive := true
+        beMovedLong     := false
+        longEntryPrice  := close
+        longStopPrice   := bbLower * (1.0 - stopBelowLowerPct / 100.0)
+        riskLong        = longEntryPrice - longStopPrice
+        longTp1Price    := longEntryPrice + riskLong * 1.0
+        longTp2Price    := longEntryPrice + riskLong * 2.0
+    else if shortSetupNew
+        shortSetupActive := true
+        beMovedShort     := false
+        shortEntryPrice  := close
+        shortStopPrice   := bbUpper * (1.0 + stopBelowLowerPct / 100.0)
+        riskShort        = shortStopPrice - shortEntryPrice
+        shortTp1Price    := shortEntryPrice - riskShort * 1.0
+        shortTp2Price    := shortEntryPrice - riskShort * 2.0
+
+// Перенос в BE для LONG
+// Зеркальный диапазон RSI для BE в шорте (относительно лонговой зоны)
+shortBEmin = 100.0 - rsiBEmax
+shortBEmax = 100.0 - rsiBEmin
+
+if longSetupActive and not beMovedLong
+    if close >= bbUpper and rsi >= rsiBEmin and rsi <= rsiBEmax
+        longStopPrice := longEntryPrice
+        beMovedLong   := true
+        oneTick  = syminfo.mintick
+        beYLong  = low - oneTick * beLabelOffsetLong
+        label.new(bar_index, beYLong, "BE",
+                  style     = beLabelStyle,
+                  textcolor = color.white,
+                  color     = beLabelColorLong,
+                  size      = size.small)
+
+// Перенос в BE для SHORT
+if shortSetupActive and not beMovedShort
+    if close <= bbLower and rsi >= rsiBEmin and rsi <= rsiBEmax
+        shortStopPrice := shortEntryPrice
+        beMovedShort   := true
+        oneTick   = syminfo.mintick
+        beYShort  = high + oneTick * beLabelOffsetShort
+        label.new(bar_index, beYShort, "BE",
+                  style     = beLabelStyle,
+                  textcolor = color.white,
+                  color     = beLabelColorShort,
+                  size      = size.small)
+
+
+// Полный выход LONG
+fullExitLongCond = longSetupActive and rsi >= rsiExitMin and rsi <= rsiExitMax and close >= bbUpper * (1.0 + fullExitOverUpperPct / 100.0)
+if fullExitLongCond
+    longSetupActive := false
+    beMovedLong     := false
+    label.new(bar_index, high, "Full Exit",
+              style     = fullExitLabelStyle,
+              textcolor = color.white,
+              color     = fullExitLabelColor,
+              size      = size.small)
+    longEntryPrice  := na
+    longStopPrice   := na
+    longTp1Price    := na
+    longTp2Price    := na
+
+// Полный выход SHORT
+fullExitShortCond = shortSetupActive and rsi >= rsiExitMin and rsi <= rsiExitMax and close <= bbLower * (1.0 - fullExitOverUpperPct / 100.0)
+if fullExitShortCond
+    shortSetupActive := false
+    beMovedShort     := false
+    label.new(bar_index, low, "Full Exit",
+              style     = fullExitLabelStyle,
+              textcolor = color.white,
+              color     = fullExitLabelColor,
+              size      = size.small)
+    shortEntryPrice  := na
+    shortStopPrice   := na
+    shortTp1Price    := na
+    shortTp2Price    := na
+
+//----------------------------------------------------
+// RSI-маркеры (треугольник + цифра)
+//----------------------------------------------------
+inLongZoneRsi  = rsi >= rsiLongMin  and rsi <= rsiLongMax
+inBEZoneRsi    = rsi >= rsiBEmin    and rsi <= rsiBEmax
+inExitZoneRsi  = rsi >= rsiExitMin  and rsi <= rsiExitMax
+
+inLongPrevRsi  = nz(rsi[1]) >= rsiLongMin  and nz(rsi[1]) <= rsiLongMax
+inBEPrevRsi    = nz(rsi[1]) >= rsiBEmin    and nz(rsi[1]) <= rsiBEmax
+inExitPrevRsi  = nz(rsi[1]) >= rsiExitMin  and nz(rsi[1]) <= rsiExitMax
+
+enterLongZoneRsi = showRsiMarkers and inLongZoneRsi  and not inLongPrevRsi
+enterBEZoneRsi   = showRsiMarkers and inBEZoneRsi    and not inBEPrevRsi
+enterExitZoneRsi = showRsiMarkers and inExitZoneRsi  and not inExitPrevRsi
+
+if enterLongZoneRsi or enterBEZoneRsi or enterExitZoneRsi
+    rsiRounded = math.round(rsi)
+    above      = rsiRounded >= 50
+
+    oneTick = syminfo.mintick
+
+    // треугольник
+    triY  = above ? high + oneTick * rsiTriOffsetAboveTicks
+                  : low  - oneTick * rsiTriOffsetBelowTicks
+
+    // цифра выше/ниже треугольника
+    textY = above ? triY + oneTick * rsiTextExtraOffsetTicks
+                  : triY - oneTick * rsiTextExtraOffsetTicks
+
+    triStyle     = above ? label.style_triangledown : label.style_triangleup
+    triColor     = above ? color.rgb(0, 0, 0) : color.new(color.silver, 0)
+    triTextColor = above ? color.rgb(0, 0, 0) : color.white
+
+    label.new(bar_index, triY, "",
+              style     = triStyle,
+              color     = triColor,
+              textcolor = triTextColor,
+              size      = rsiTriangleSize)
+
+    label.new(bar_index, textY, str.tostring(rsiRounded),
+              style     = label.style_none,
+              textcolor = color.white,
+              size      = rsiTextSize)
