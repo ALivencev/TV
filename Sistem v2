@@ -1,0 +1,577 @@
+//@version=5
+indicator("MACD + BB + WMA Tool", shorttitle="363_indicator", overlay=true, max_bars_back=5000, max_lines_count=500, max_labels_count=500)
+
+// === Группы для UI ===
+wmaGroup = "WMA"
+trendGroup = "Trendlines"
+macdGroup = "MACD"
+bbGroup = "Bollinger Bands"
+rsiGroup = "RSI + EMA + WMA"
+divGroup = "Divergence"
+stopGroup = "STOP"
+alertsGroup = "Alerts"
+
+
+// === WMA цены ===
+wmaLength = input.int(50, "Length", minval=1, group=wmaGroup)
+wmaSrc = input.source(close, "Source", group=wmaGroup)
+wmaColor = input.color(#000000, "Line Color", group=wmaGroup)
+wmaLineWidth = input.int(4, "Line Width", minval=1, maxval=10, group=wmaGroup)
+wmaUpperFillColor = input.color(color.new(#0a6250, 50), "Fill Above Color", group=wmaGroup)
+wmaLowerFillColor = input.color(color.new(#801922, 50), "Fill Below Color", group=wmaGroup)
+wmaUpperOffset = input.float(200.0, "Distance Above (ticks)", step=0.5, group=wmaGroup)
+wmaLowerOffset = input.float(200.0, "Distance Below (ticks)", step=0.5, group=wmaGroup)
+wmaValue = ta.wma(wmaSrc, wmaLength)
+wmaLinePlot = plot(wmaValue, title="WMA", color=wmaColor, linewidth=wmaLineWidth)
+wmaUpperBand = wmaValue + wmaUpperOffset * syminfo.mintick
+wmaLowerBand = wmaValue - wmaLowerOffset * syminfo.mintick
+wmaUpperPlot = plot(wmaUpperBand, title="WMA Upper Band", display=display.none)
+wmaLowerPlot = plot(wmaLowerBand, title="WMA Lower Band", display=display.none)
+fill(wmaLinePlot, wmaUpperPlot, title="Fill Above WMA", color=wmaUpperFillColor)
+fill(wmaLinePlot, wmaLowerPlot, title="Fill Below WMA", color=wmaLowerFillColor)
+
+// === TRENDLINES: настройки UI ===
+enableTrendUpper = input.bool(true, "Show Upper Trendline", group=trendGroup)
+enableTrendLower = input.bool(true, "Show Lower Trendline", group=trendGroup)
+pivotLeft = input.int(5, "Pivot Left", minval=1, group=trendGroup)
+pivotRight = input.int(5, "Pivot Right", minval=1, group=trendGroup)
+trendSourceMode = input.string("Wicks", "Price Source", options=["Wicks", "Bodies"], group=trendGroup)
+showSp123Labels = input.bool(true, "Show 1-2-3 Labels", group=trendGroup)
+showSp123Lines  = input.bool(true, "Show 1-2-3 Zigzag", group=trendGroup)
+
+// === TRENDLINES: логика построения (Sperandeo) ===
+bodyHigh = math.max(open, close)
+bodyLow = math.min(open, close)
+trendHighSrc = trendSourceMode == "Wicks" ? high : bodyHigh
+trendLowSrc = trendSourceMode == "Wicks" ? low : bodyLow
+
+
+trendLineColor = color.new(#b8b8b8, 0)
+histTrendColor = color.new(#000000, 0)
+trendLineWidth = 2
+
+pivHighVal = ta.pivothigh(trendHighSrc, pivotLeft, pivotRight)
+pivLowVal = ta.pivotlow(trendLowSrc, pivotLeft, pivotRight)
+pivHighBar = not na(pivHighVal) ? bar_index - pivotRight : na
+pivLowBar = not na(pivLowVal) ? bar_index - pivotRight : na
+
+var float swingHigh1 = na
+var float swingHigh2 = na
+var int swingHighBar1 = na
+var int swingHighBar2 = na
+var line downTrendLine = na
+
+var float swingLow1 = na
+var float swingLow2 = na
+var int swingLowBar1 = na
+var int swingLowBar2 = na
+var line upTrendLine = na
+var float downSlope = na
+var float upSlope = na
+var bool downBroken = false
+var bool upBroken = false
+trendForwardBars = 48
+
+if not na(pivHighVal)
+    swingHigh2 := swingHigh1
+    swingHighBar2 := swingHighBar1
+    swingHigh1 := pivHighVal
+    swingHighBar1 := pivHighBar
+    if enableTrendUpper and not na(swingHigh2) and swingHigh1 < swingHigh2
+        if not na(downTrendLine)
+            if downBroken
+                line.set_extend(downTrendLine, extend.none)
+                line.set_color(downTrendLine, histTrendColor)
+                line.set_width(downTrendLine, 2)
+            else
+                line.delete(downTrendLine)
+        float dxHigh = float(swingHighBar1 - swingHighBar2)
+        downSlope := dxHigh != 0.0 ? (swingHigh1 - swingHigh2) / dxHigh : 0.0
+        downBroken := false
+        int x2High = bar_index + trendForwardBars
+        float y2High = swingHigh1 + downSlope * float(x2High - swingHighBar1)
+        downTrendLine := line.new(swingHighBar2, swingHigh2, x2High, y2High, xloc=xloc.bar_index, extend=extend.none, color=trendLineColor, width=trendLineWidth)
+
+if not na(pivLowVal)
+    swingLow2 := swingLow1
+    swingLowBar2 := swingLowBar1
+    swingLow1 := pivLowVal
+    swingLowBar1 := pivLowBar
+    if enableTrendLower and not na(swingLow2) and swingLow1 > swingLow2
+        if not na(upTrendLine)
+            if upBroken
+                line.set_extend(upTrendLine, extend.none)
+                line.set_color(upTrendLine, histTrendColor)
+                line.set_width(upTrendLine, 2)
+            else
+                line.delete(upTrendLine)
+        float dxLow = float(swingLowBar1 - swingLowBar2)
+        upSlope := dxLow != 0.0 ? (swingLow1 - swingLow2) / dxLow : 0.0
+        upBroken := false
+        int x2Low = bar_index + trendForwardBars
+        float y2Low = swingLow1 + upSlope * float(x2Low - swingLowBar1)
+        upTrendLine := line.new(swingLowBar2, swingLow2, x2Low, y2Low, xloc=xloc.bar_index, extend=extend.none, color=trendLineColor, width=trendLineWidth)
+
+// === TRENDLINES: сигналы ломки (Condition 1) ===
+downLinePrice = not na(downTrendLine) ? line.get_price(downTrendLine, bar_index) : na
+upLinePrice = not na(upTrendLine) ? line.get_price(upTrendLine, bar_index) : na
+
+downBreak = enableTrendUpper and not na(downLinePrice) and ta.crossover(close, downLinePrice)
+upBreak = enableTrendLower and not na(upLinePrice) and ta.crossunder(close, upLinePrice)
+
+// визуальные стрелки ломки тренда
+plotshape(downBreak, title="Trendline Break Long", style=shape.triangleup, location=location.belowbar, color=color.new(#ffffff, 0), size=size.tiny)
+plotshape(upBreak, title="Trendline Break Short", style=shape.triangledown, location=location.abovebar, color=color.new(#ff7300, 0), size=size.tiny)
+
+// объединённое условие для алерта
+alertTrendBreakCond = (downBreak or upBreak) and barstate.isconfirmed
+
+// обрезаем трендовую на первом баре ломки и красим в чёрный
+if downBreak and not na(downTrendLine) and not downBroken and not na(downLinePrice)
+    line.set_x2(downTrendLine, bar_index)
+    line.set_y2(downTrendLine, downLinePrice)
+    line.set_color(downTrendLine, histTrendColor)
+    line.set_width(downTrendLine, 2)
+    downBroken := true
+
+if upBreak and not na(upTrendLine) and not upBroken and not na(upLinePrice)
+    line.set_x2(upTrendLine, bar_index)
+    line.set_y2(upTrendLine, upLinePrice)
+    line.set_color(upTrendLine, histTrendColor)
+    line.set_width(upTrendLine, 2)
+    upBroken := true
+
+if not downBroken and not na(downTrendLine) and not na(downSlope) and not na(swingHighBar1)
+    int x2DynHigh = bar_index + trendForwardBars
+    float y2DynHigh = swingHigh1 + downSlope * float(x2DynHigh - swingHighBar1)
+    line.set_x2(downTrendLine, x2DynHigh)
+    line.set_y2(downTrendLine, y2DynHigh)
+
+if not upBroken and not na(upTrendLine) and not na(upSlope) and not na(swingLowBar1)
+    int x2DynLow = bar_index + trendForwardBars
+    float y2DynLow = swingLow1 + upSlope * float(x2DynLow - swingLowBar1)
+    line.set_x2(upTrendLine, x2DynLow)
+    line.set_y2(upTrendLine, y2DynLow)
+
+// === SPERANDEO 1-2-3 PATTERN ===
+// цвета 1-2-3 (LONG / SHORT)
+spLongLabelBgColor  = color.new(#063f35, 000)
+spShortLabelBgColor = color.new(#521419, 000)
+spLabelTextColor    = color.new(#e0e0e0, 0)
+
+
+// LONG 1-2-3 (разворот вверх из даунтренда)
+var int   spLongState      = 0
+var float spLongP1         = na
+var float spLongP2         = na
+var float spLongP3         = na
+var int   spLongP1Bar      = na
+var int   spLongP2Bar      = na
+var int   spLongP3Bar      = na
+var float spLongPrevHigh   = na
+var int   spLongBreakBar   = na
+
+// SHORT 1-2-3 (разворот вниз из аптренда)
+var int   spShortState     = 0
+var float spShortP1        = na
+var float spShortP2        = na
+var float spShortP3        = na
+var int   spShortP1Bar     = na
+var int   spShortP2Bar     = na
+var int   spShortP3Bar     = na
+var float spShortPrevLow   = na
+var int   spShortBreakBar  = na
+
+var bool spLongPatternSignal  = false
+var bool spShortPatternSignal = false
+spLongPatternSignal  := false
+spShortPatternSignal := false
+
+// --- LONG 1-2-3 ---
+if downBreak
+    spLongState    := 1
+    spLongP1       := swingLow1
+    spLongP1Bar    := swingLowBar1
+    spLongPrevHigh := swingHigh1
+    spLongBreakBar := bar_index
+    spLongP2       := na
+    spLongP3       := na
+
+if spLongState == 1 and not na(pivHighVal) and pivHighBar > spLongBreakBar and not na(spLongPrevHigh) and pivHighVal > spLongPrevHigh
+    spLongState := 2
+    spLongP2    := pivHighVal
+    spLongP2Bar := pivHighBar
+
+if spLongState == 2 and not na(pivLowVal) and pivLowBar > spLongP2Bar and not na(spLongP1) and pivLowVal > spLongP1
+    spLongState          := 0
+    spLongP3             := pivLowVal
+    spLongP3Bar          := pivLowBar
+    spLongPatternSignal  := true
+    if showSp123Labels and not na(spLongP1) and not na(spLongP1Bar)
+        label.new(spLongP1Bar, spLongP1, "1L", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up,   color=spLongLabelBgColor, textcolor=spLabelTextColor, size=size.tiny)
+    if showSp123Labels and not na(spLongP2) and not na(spLongP2Bar)
+        label.new(spLongP2Bar, spLongP2, "2L", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=spLongLabelBgColor, textcolor=spLabelTextColor, size=size.tiny)
+    if showSp123Labels and not na(spLongP3) and not na(spLongP3Bar)
+        label.new(spLongP3Bar, spLongP3, "3L", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up,   color=spLongLabelBgColor, textcolor=spLabelTextColor, size=size.tiny)
+
+
+// --- SHORT 1-2-3 ---
+if upBreak
+    spShortState   := 1
+    spShortP1      := swingHigh1
+    spShortP1Bar   := swingHighBar1
+    spShortPrevLow := swingLow1
+    spShortBreakBar:= bar_index
+    spShortP2      := na
+    spShortP3      := na
+
+if spShortState == 1 and not na(pivLowVal) and pivLowBar > spShortBreakBar and not na(spShortPrevLow) and pivLowVal < spShortPrevLow
+    spShortState := 2
+    spShortP2    := pivLowVal
+    spShortP2Bar := pivLowBar
+
+if spShortState == 2 and not na(pivHighVal) and pivHighBar > spShortP2Bar and not na(spShortP1) and pivHighVal < spShortP1
+    spShortState         := 0
+    spShortP3            := pivHighVal
+    spShortP3Bar         := pivHighBar
+    spShortPatternSignal := true
+    if showSp123Labels and not na(spShortP1) and not na(spShortP1Bar)
+        label.new(spShortP1Bar, spShortP1, "1S", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=spShortLabelBgColor, textcolor=spLabelTextColor, size=size.tiny)
+    if showSp123Labels and not na(spShortP2) and not na(spShortP2Bar)
+        label.new(spShortP2Bar, spShortP2, "2S", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up,   color=spShortLabelBgColor, textcolor=spLabelTextColor, size=size.tiny)
+    if showSp123Labels and not na(spShortP3) and not na(spShortP3Bar)
+        label.new(spShortP3Bar, spShortP3, "3S", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=spShortLabelBgColor, textcolor=spLabelTextColor, size=size.tiny)
+
+
+// LONG debug-lines
+// LONG debug-lines
+if showSp123Lines and spLongPatternSignal and not na(spLongP1Bar) and not na(spLongP2Bar) and not na(spLongP3Bar)
+    line.new(spLongP1Bar, spLongP1, spLongP2Bar, spLongP2, xloc=xloc.bar_index, extend=extend.none, color=color.new(#063f35, 0), width=1)
+    line.new(spLongP2Bar, spLongP2, spLongP3Bar, spLongP3, xloc=xloc.bar_index, extend=extend.none, color=color.new(#063f35, 0), width=1)
+
+// SHORT debug-lines
+if showSp123Lines and spShortPatternSignal and not na(spShortP1Bar) and not na(spShortP2Bar) and not na(spShortP3Bar)
+    line.new(spShortP1Bar, spShortP1, spShortP2Bar, spShortP2, xloc=xloc.bar_index, extend=extend.none, color=color.new(#521419, 0), width=1)
+    line.new(spShortP2Bar, spShortP2, spShortP3Bar, spShortP3, xloc=xloc.bar_index, extend=extend.none, color=color.new(#521419, 0), width=1)
+
+
+// объединённый сигнал для алерта
+alert123Cond = (spLongPatternSignal or spShortPatternSignal) and barstate.isconfirmed
+
+// === MACD: числовые настройки ===
+macdFastLenInput = input.float(12.0, "Fast Length", minval=1.0, step=0.5, group=macdGroup)
+macdSlowLenInput = input.float(26.0, "Slow Length", minval=1.0, step=0.5, group=macdGroup)
+macdSignalLenInput = input.float(9.0, "Signal Length", minval=1.0, step=0.5, group=macdGroup)
+macdSrc = input.source(close, "Source", group=macdGroup)
+macdFastLen = int(math.round(macdFastLenInput))
+macdSlowLen = int(math.round(macdSlowLenInput))
+macdSignalLen = int(math.round(macdSignalLenInput))
+macdFastEma = ta.ema(macdSrc, macdFastLen)
+macdSlowEma = ta.ema(macdSrc, macdSlowLen)
+macdValue = macdFastEma - macdSlowEma
+macdSignal = ta.ema(macdValue, macdSignalLen)
+macdHist = macdValue - macdSignal
+macdLongCrossCore = ta.crossover(macdValue, macdSignal)
+macdShortCrossCore = ta.crossunder(macdValue, macdSignal)
+macdLongCrossAboveZero = macdLongCrossCore and macdValue > 0 and macdSignal > 0
+macdShortCrossBelowZero = macdShortCrossCore and macdValue < 0 and macdSignal < 0
+macdLongCrossOnly = macdLongCrossCore and not macdLongCrossAboveZero
+macdShortCrossOnly = macdShortCrossCore and not macdShortCrossBelowZero
+plotshape(macdLongCrossOnly, title="MACD Long Cross", style=shape.cross, location=location.belowbar, color=color.new(#1fd3a9, 0), size=size.small)
+plotshape(macdShortCrossOnly, title="MACD Short Cross", style=shape.cross, location=location.abovebar, color=color.new(#c61111, 0), size=size.small)
+plotshape(macdLongCrossAboveZero, title="MACD Long Text", text="▲ 0", style=shape.labelup, location=location.belowbar, color=color.new(#c51212, 100), textcolor=color.new(#0f8a73, 0), size=size.tiny)
+plotshape(macdShortCrossBelowZero, title="MACD Short Text", text="▼ 0", style=shape.labeldown, location=location.abovebar, color=color.new(#00fff2, 100), textcolor=color.new(#c12020, 0), size=size.tiny)
+///сигналы///
+alertCrossCond = (macdLongCrossCore or macdShortCrossCore) and barstate.isconfirmed
+
+
+// === STOP сигналы по MACD крестам ===
+stopLookbackBars = input.int(10, "STOP Lookback Bars", minval=1, maxval=200, group=stopGroup)
+stopOffsetTicks = input.float(2.0, "STOP Offset (ticks)", minval=0.0, step=0.5, group=stopGroup)
+stopColor = input.color(#000000, "STOP Color", group=stopGroup)
+stopStyleOpt = input.string("circle", "STOP Style", options=["circle", "square", "cross"], group=stopGroup)
+stopStyle = stopStyleOpt == "circle" ? label.style_circle : stopStyleOpt == "square" ? label.style_label_center : label.style_cross
+
+stopLongCond = macdLongCrossCore
+stopShortCond = macdShortCrossCore
+
+if stopLongCond
+    float minPrice = na
+    int minShift = na
+    for i = 1 to stopLookbackBars
+        curLow = low[i]
+        if not na(curLow) and (na(minPrice) or curLow < minPrice)
+            minPrice := curLow
+            minShift := i
+    if not na(minPrice) and not na(minShift)
+        label.new(bar_index - minShift, minPrice - stopOffsetTicks * syminfo.mintick, "", xloc=xloc.bar_index, yloc=yloc.price, style=stopStyle, color=stopColor, textcolor=stopColor, size=size.tiny)
+
+if stopShortCond
+    float maxPrice = na
+    int maxShift = na
+    for i = 1 to stopLookbackBars
+        curHigh = high[i]
+        if not na(curHigh) and (na(maxPrice) or curHigh > maxPrice)
+            maxPrice := curHigh
+            maxShift := i
+    if not na(maxPrice) and not na(maxShift)
+        label.new(bar_index - maxShift, maxPrice + stopOffsetTicks * syminfo.mintick, "", xloc=xloc.bar_index, yloc=yloc.price, style=stopStyle, color=stopColor, textcolor=stopColor, size=size.tiny)
+
+// === PATTERNS: settings ===
+showDouble     = input.bool(true, "Show Double Top/Bottom",       group="Patterns")
+showHeadShould = input.bool(true, "Show Head & Shoulders (top)",  group="Patterns")
+dtTolerancePct = input.float(1.0, "DT/DB Price Tolerance (%)",    minval=0.1, maxval=5.0, step=0.1, group="Patterns")
+dtMinBars      = input.int(5,    "DT/DB Min Bars Between Tops",   minval=1, group="Patterns")
+hsShoulderPct  = input.float(2.0,"H&S Shoulders Tolerance (%)",   minval=0.5, maxval=10.0, step=0.5, group="Patterns")
+hsHeadExtraPct = input.float(1.0,"H&S Head Higher Than Shoulders (%)", minval=0.5, maxval=10.0, step=0.5, group="Patterns")
+
+patternColor         = color.new(#3664b3, 0)
+patternLabelBgColor  = patternColor
+patternLabelTxtColor = color.new(#e0e0e0, 0)
+patternOffsetTicks   = 70.0
+
+dtTol         = dtTolerancePct * 0.01
+hsShoulderTol = hsShoulderPct  * 0.01
+hsHeadExtra   = hsHeadExtraPct * 0.01
+
+offsetPx(x) => x + patternOffsetTicks * syminfo.mintick
+offsetNx(x) => x - patternOffsetTicks * syminfo.mintick
+
+
+// === DOUBLE TOP / DOUBLE BOTTOM ===
+
+// Double Top state
+var int   dtState     = 0
+var float dtH1Val     = na
+var float dtNeckVal   = na
+var float dtH2Val     = na
+var int   dtH1Bar     = na
+var int   dtNeckBar   = na
+var int   dtH2Bar     = na
+bool      dtConfirmed = false
+dtConfirmed := false
+
+// Double Bottom state
+var int   dbState     = 0
+var float dbL1Val     = na
+var float dbNeckVal   = na
+var float dbL2Val     = na
+var int   dbL1Bar     = na
+var int   dbNeckBar   = na
+var int   dbL2Bar     = na
+bool      dbConfirmed = false
+dbConfirmed := false
+
+// --- Double Top: H1 -> L -> H2 ≈ H1, затем пробой L ---
+if showDouble and not na(pivHighVal)
+    if dtState == 0
+        dtState := 1
+        dtH1Val := pivHighVal
+        dtH1Bar := pivHighBar
+    else if dtState == 2 and pivHighBar > dtNeckBar and pivHighBar - dtNeckBar >= dtMinBars and math.abs(pivHighVal - dtH1Val) / dtH1Val <= dtTol
+        dtState   := 3
+        dtH2Val   := pivHighVal
+        dtH2Bar   := pivHighBar
+    else
+        dtState := 1
+        dtH1Val := pivHighVal
+        dtH1Bar := pivHighBar
+
+if showDouble and not na(pivLowVal)
+    if dtState == 1 and pivLowBar > dtH1Bar
+        dtState    := 2
+        dtNeckVal  := pivLowVal
+        dtNeckBar  := pivLowBar
+
+if showDouble and dtState == 3 and barstate.isconfirmed and close < dtNeckVal
+    dtConfirmed := true
+    dtState     := 0
+
+if showDouble and dtConfirmed and not na(dtH1Val) and not na(dtH2Val) and not na(dtNeckVal)
+    label.new(dtH2Bar, offsetPx(dtH2Val), "DT", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=patternLabelBgColor, textcolor=patternLabelTxtColor, size=size.tiny)
+
+
+// --- Double Bottom: L1 -> H -> L2 ≈ L1, затем пробой H ---
+if showDouble and not na(pivLowVal)
+    if dbState == 0
+        dbState := 1
+        dbL1Val := pivLowVal
+        dbL1Bar := pivLowBar
+    else if dbState == 2 and pivLowBar > dbNeckBar and pivLowBar - dbNeckBar >= dtMinBars and math.abs(pivLowVal - dbL1Val) / dbL1Val <= dtTol
+        dbState   := 3
+        dbL2Val   := pivLowVal
+        dbL2Bar   := pivLowBar
+    else
+        dbState := 1
+        dbL1Val := pivLowVal
+        dbL1Bar := pivLowBar
+
+if showDouble and not na(pivHighVal)
+    if dbState == 1 and pivHighBar > dbL1Bar
+        dbState    := 2
+        dbNeckVal  := pivHighVal
+        dbNeckBar  := pivHighBar
+
+if showDouble and dbState == 3 and barstate.isconfirmed and close > dbNeckVal
+    dbConfirmed := true
+    dbState     := 0
+
+if showDouble and dbConfirmed and not na(dbL1Val) and not na(dbL2Val) and not na(dbNeckVal)
+    label.new(dbL2Bar, offsetNx(dbL2Val), "DB", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up, color=patternLabelBgColor, textcolor=patternLabelTxtColor, size=size.tiny)
+
+// === HEAD & SHOULDERS (top) ===
+var int   hsState     = 0
+var float hsLSVal     = na
+var float hsL1Val     = na
+var float hsHeadVal   = na
+var float hsL2Val     = na
+var float hsRSVal     = na
+var int   hsLSBar     = na
+var int   hsL1Bar     = na
+var int   hsHeadBar   = na
+var int   hsL2Bar     = na
+var int   hsRSBar     = na
+bool      hsConfirmed = false
+hsConfirmed := false
+
+// LS, HEAD, RS
+if showHeadShould and not na(pivHighVal)
+    if hsState == 0
+        hsState   := 1
+        hsLSVal   := pivHighVal
+        hsLSBar   := pivHighBar
+    else if hsState == 2 and pivHighBar > hsL1Bar and pivHighVal > hsLSVal * (1.0 + hsHeadExtra)
+        hsState    := 3
+        hsHeadVal  := pivHighVal
+        hsHeadBar  := pivHighBar
+    else if hsState == 4 and pivHighBar > hsL2Bar
+        bool shoulderOk = math.abs(pivHighVal - hsLSVal) / hsHeadVal <= hsShoulderTol and pivHighVal < hsHeadVal
+        if shoulderOk
+            hsState  := 5
+            hsRSVal  := pivHighVal
+            hsRSBar  := pivHighBar
+        else
+            hsState  := 1
+            hsLSVal  := pivHighVal
+            hsLSBar  := pivHighBar
+
+// L1, L2
+if showHeadShould and not na(pivLowVal)
+    if hsState == 1 and pivLowBar > hsLSBar
+        hsState  := 2
+        hsL1Val  := pivLowVal
+        hsL1Bar  := pivLowBar
+    else if hsState == 3 and pivLowBar > hsHeadBar
+        hsState  := 4
+        hsL2Val  := pivLowVal
+        hsL2Bar  := pivLowBar
+
+// пробой шеи
+if showHeadShould and hsState == 5 and not na(hsL1Val) and not na(hsL2Val)
+    float hsNeck = math.avg(hsL1Val, hsL2Val)
+    if barstate.isconfirmed and close < hsNeck
+        hsConfirmed := true
+        hsState     := 0
+
+if showHeadShould and hsConfirmed and not na(hsLSVal) and not na(hsHeadVal) and not na(hsRSVal) and not na(hsL1Val) and not na(hsL2Val)
+    label.new(hsHeadBar, offsetPx(hsHeadVal), "HS", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=patternLabelBgColor, textcolor=patternLabelTxtColor, size=size.tiny)
+
+
+
+// === Bollinger Bands ===
+bbLengthInput = input.float(20.0, "Length", minval=1.0, step=0.1, group=bbGroup)
+bbMult = input.float(2.0, "Deviation Mult", minval=0.1, step=0.1, group=bbGroup)
+bbSrc = input.source(close, "Source", group=bbGroup)
+bbLength = int(math.round(bbLengthInput))
+bbBasis = ta.sma(bbSrc, bbLength)
+bbDev = ta.stdev(bbSrc, bbLength)
+bbUpper = bbBasis + bbDev * bbMult
+bbLower = bbBasis - bbDev * bbMult
+bbBasisPlot = plot(bbBasis, title="BB Basis", color=#9c9c9c, linewidth=2)
+bbUpperPlot = plot(bbUpper, title="BB Upper", color=#7b7b7b, linewidth=1)
+bbLowerPlot = plot(bbLower, title="BB Lower", color=#7b7b7b, linewidth=1)
+
+// === RSI + EMA + WMA по RSI ===
+rsiLengthInput = input.float(14.0, "RSI Length", minval=1.0, step=0.5, group=rsiGroup)
+rsiSrc = input.source(close, "RSI Source", group=rsiGroup)
+rsiEmaLenInput = input.float(9.0, "RSI EMA Length", minval=1.0, step=0.5, group=rsiGroup)
+rsiWmaLenInput = input.float(35.0, "RSI WMA Length", minval=1.0, step=0.5, group=rsiGroup)
+rsiMaxLow = input.float(66.0, "RSI MAX Range Low", minval=0.0, maxval=100.0, step=0.5, group=rsiGroup)
+rsiMaxHigh = input.float(90.0, "RSI MAX Range High", minval=0.0, maxval=100.0, step=0.5, group=rsiGroup)
+rsiMinLow = input.float(10.0, "RSI MIN Range Low", minval=0.0, maxval=100.0, step=0.5, group=rsiGroup)
+rsiMinHigh = input.float(38.0, "RSI MIN Range High", minval=0.0, maxval=100.0, step=0.5, group=rsiGroup)
+maxLabelBgColor = input.color(color.new(#ff5252, 100), "MAX Label BG", group=rsiGroup)
+maxLabelTextColor = input.color(color.new(#000000, 0), "MAX Label Text", group=rsiGroup)
+minLabelBgColor = input.color(color.new(#4caf4f, 100), "MIN Label BG", group=rsiGroup)
+minLabelTextColor = input.color(color.new(#dedede, 0), "MIN Label Text", group=rsiGroup)
+rsiLength = int(math.round(rsiLengthInput))
+rsiEmaLen = int(math.round(rsiEmaLenInput))
+rsiWmaLen = int(math.round(rsiWmaLenInput))
+rsiValue = ta.rsi(rsiSrc, rsiLength)
+rsiEma = ta.ema(rsiValue, rsiEmaLen)
+rsiWmaRsi = ta.wma(rsiValue, rsiWmaLen)
+rsiInMaxRange = rsiValue >= rsiMaxLow and rsiValue <= rsiMaxHigh
+rsiInMinRange = rsiValue >= rsiMinLow and rsiValue <= rsiMinHigh
+rsiAboveEmaWma = rsiValue > rsiEma and rsiValue > rsiWmaRsi
+rsiBelowEmaWma = rsiValue < rsiEma and rsiValue < rsiWmaRsi
+closeAboveWmaUpperAndBbUpper = close > wmaUpperBand and close > bbUpper
+closeBelowWmaLowerAndBbLower = close < wmaLowerBand and close < bbLower
+maxCond = rsiInMaxRange and rsiAboveEmaWma and closeAboveWmaUpperAndBbUpper
+minCond = rsiInMinRange and rsiBelowEmaWma and closeBelowWmaLowerAndBbLower
+plotshape(maxCond, title="RSI MAX Label", text="MAX", style=shape.labeldown, location=location.abovebar, color=maxLabelBgColor, textcolor=maxLabelTextColor, size=size.tiny)
+plotshape(minCond, title="RSI MIN Label", text="MIN", style=shape.labelup, location=location.belowbar, color=minLabelBgColor, textcolor=minLabelTextColor, size=size.tiny)
+///сигналы///
+alertRsiExtremaCond = (maxCond or minCond) and barstate.isconfirmed
+
+
+// === DIVERGENCE (линии между экстремумами) ===
+divFractalN = input.int(4, "Fractal Periods", minval=2, group=divGroup)
+divMaxDistance = input.int(30, "Max Bars Between Pivots", minval=1, group=divGroup)
+divHistType = input.string("MACD", "Divergence Method", options=["MACD","RSI","AO"], group=divGroup)
+divBearColor = input.color(color.new(color.red, 0), "Bear Div Color", group=divGroup)
+divBullColor = input.color(color.new(color.lime, 0), "Bull Div Color", group=divGroup)
+divBearWidth = input.int(2, "Bear Div Width", minval=1, maxval=10, group=divGroup)
+divBullWidth = input.int(2, "Bull Div Width", minval=1, maxval=10, group=divGroup)
+aoHist = ta.sma(hl2, 5) - ta.sma(hl2, 34)
+rsiAdj = rsiValue - 50
+float Hist = divHistType == "MACD" ? macdHist : divHistType == "AO" ? aoHist : rsiAdj
+upFractal = high[divFractalN] == ta.highest(high, divFractalN * 2 + 1)
+downFractal = low[divFractalN] == ta.lowest(low, divFractalN * 2 + 1)
+High_Last_Price = ta.valuewhen(upFractal, high[divFractalN], 0)
+High_Per_Price = ta.valuewhen(upFractal, high[divFractalN], 1)
+High_Last_Hist = ta.valuewhen(upFractal, Hist[divFractalN], 0)
+High_Per_Hist = ta.valuewhen(upFractal, Hist[divFractalN], 1)
+High_Last_Bar = ta.valuewhen(upFractal, bar_index[divFractalN], 0)
+High_Per_Bar = ta.valuewhen(upFractal, bar_index[divFractalN], 1)
+Time_Condition_Bear = (High_Last_Bar + divMaxDistance) > bar_index
+Last_Bearish_Divergence = High_Last_Hist > 0 and High_Per_Hist > 0 and Time_Condition_Bear and (High_Last_Bar - High_Per_Bar) < divMaxDistance and (High_Last_Price > High_Per_Price) and (High_Last_Hist < High_Per_Hist)
+Low_Last_Price = ta.valuewhen(downFractal, low[divFractalN], 0)
+Low_Per_Price = ta.valuewhen(downFractal, low[divFractalN], 1)
+Low_Last_Hist = ta.valuewhen(downFractal, Hist[divFractalN], 0)
+Low_Per_Hist = ta.valuewhen(downFractal, Hist[divFractalN], 1)
+Low_Last_Bar = ta.valuewhen(downFractal, bar_index[divFractalN], 0)
+Low_Per_Bar = ta.valuewhen(downFractal, bar_index[divFractalN], 1)
+Time_Condition_Bull = (Low_Last_Bar + divMaxDistance) > bar_index
+Last_Bullish_Divergence = Low_Last_Hist < 0 and Low_Per_Hist < 0 and Time_Condition_Bull and (Low_Last_Bar - Low_Per_Bar) < divMaxDistance and (Low_Last_Price < Low_Per_Price) and (Low_Last_Hist > Low_Per_Hist)
+bearDivSignal = ta.change(High_Last_Price) and Last_Bearish_Divergence
+bullDivSignal = ta.change(Low_Last_Price) and Last_Bullish_Divergence
+if bearDivSignal
+    line.new(High_Per_Bar, High_Per_Price, High_Last_Bar, High_Last_Price, xloc=xloc.bar_index, extend=extend.none, color=divBearColor, width=divBearWidth)
+
+if bullDivSignal
+    line.new(Low_Per_Bar, Low_Per_Price, Low_Last_Bar, Low_Last_Price, xloc=xloc.bar_index, extend=extend.none, color=divBullColor, width=divBullWidth)
+
+alertDivCond = (bearDivSignal or bullDivSignal) and barstate.isconfirmed
+
+///сигналы///
+alertOnCross = input.bool(true, "MACD Crosses", group=alertsGroup)
+alertOnRsiExtrema = input.bool(true, "RSI MAX / MIN", group=alertsGroup)
+alertOnDivergence = input.bool(true, "Divergences", group=alertsGroup)
+alertOnTrendBreak = input.bool(true, "Trendline Breaks", group=alertsGroup)
+alertOn123 = input.bool(true, "Sperandeo 1-2-3", group=alertsGroup)
+
+alertcondition(alertOnCross and alertCrossCond, "MACD Cross (any)", "MACD: new cross (long or short)")
+alertcondition(alertOnRsiExtrema and alertRsiExtremaCond, "RSI MAX/MIN", "RSI: new MAX or MIN signal")
+alertcondition(alertOnDivergence and alertDivCond, "Divergence (any)", "New bullish or bearish divergence")
+alertcondition(alertOnTrendBreak and alertTrendBreakCond, "Trendline Break (any)", "Trendline broken (uptrend or downtrend)")
+alertcondition(alertOn123 and alert123Cond, "Sperandeo 1-2-3 (any)", "Sperandeo 1-2-3 pattern (long or short)")
