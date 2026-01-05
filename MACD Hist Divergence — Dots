@@ -1,0 +1,309 @@
+//@version=6
+indicator("MACD Hist Divergence — Dots", overlay=true, max_labels_count=500)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 1) Calculation source
+grpCalc = "1) Calculation source"
+calcSymbolStr = input.string("", "Calc symbol (empty = chart)", group=grpCalc,
+     tooltip="Пример: BINANCE:BTCUSDT. Пусто = текущий график.")
+calcTF_in = input.timeframe("", "Calc timeframe (empty = chart)", group=grpCalc)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 2) MACD settings
+grpMacd = "2) MACD settings"
+fastLen   = input.int(12, "MACD Fast",   minval=1, group=grpMacd)
+slowLen   = input.int(26, "MACD Slow",   minval=1, group=grpMacd)
+signalLen = input.int(9,  "MACD Signal", minval=1, group=grpMacd)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 3) Pivot settings (for confirmed stage)
+grpPiv = "3) Pivot settings"
+left  = input.int(5, "Pivot Left",  minval=1, group=grpPiv)
+right = input.int(5, "Pivot Right", minval=1, group=grpPiv)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 4) What to show
+grpShow = "4) What to show"
+showForming      = input.bool(true,  "Show forming (repaints)", group=grpShow)
+showContinuation = input.bool(true,  "Show continuation (new calc extremes only)", group=grpShow)
+showConfirmed    = input.bool(true,  "Show confirmed (no repaint)", group=grpShow)
+
+showPreConfirmed = input.bool(false, "Show pre-confirmed (repaints)", group=grpShow,
+     tooltip="Ранний кандидат confirmed. Может исчезать/перерисовываться.")
+preOnConfirm = input.string("Delete", "Pre-confirmed on confirm", options=["Delete","Keep"], group=grpShow,
+     tooltip="Delete: удалить pre-confirmed когда появится confirmed.\nKeep: оставить pre-confirmed на графике.")
+
+confirmedMode = input.string("Strict", "Confirmed placement", options=["Strict","By pivot time"], group=grpShow,
+     tooltip="Strict: confirmed рисуется строго на pivot-свече ТЕКУЩЕГО графика, только если calc=chart.\nBy pivot time: рисует по времени pivot-свечи (подходит для HTF расчётов).")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 5) Marker style
+grpStyle = "5) Marker style"
+markerType = input.string("Circle", "Marker type", options=["Circle","Text dot"], group=grpStyle,
+     tooltip="Circle: маленький кружок (label.style_circle).\nText dot: символ точки '•' без фона.")
+dotChar = input.string("•", "Dot char (for Text dot)", group=grpStyle)
+
+sizeOpt = input.string("Tiny", "Marker size", options=["Tiny","Small","Normal","Large","Huge"], group=grpStyle)
+
+useSeparateOffsets = input.bool(true, "Separate offsets for Bear/Bull", group=grpStyle)
+offsetTicksCommon  = input.int(0, "Offset (ticks) common", minval=0, group=grpStyle)
+offsetTicksBear    = input.int(0, "Offset (ticks) Bear (above)", minval=0, group=grpStyle)
+offsetTicksBull    = input.int(0, "Offset (ticks) Bull (below)", minval=0, group=grpStyle)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 6) Colors
+grpCol = "6) Colors"
+bearStartCol = input.color(color.new(color.red,  75), "Bear forming",       group=grpCol)
+bearContCol  = input.color(color.new(color.red,  55), "Bear continuation",  group=grpCol)
+bearPreCol   = input.color(color.new(color.red,  70), "Bear pre-confirmed", group=grpCol)
+bearConfCol  = input.color(color.new(color.red,   0), "Bear confirmed",     group=grpCol)
+
+bullStartCol = input.color(color.new(color.lime, 75), "Bull forming",       group=grpCol)
+bullContCol  = input.color(color.new(color.lime, 55), "Bull continuation",  group=grpCol)
+bullPreCol   = input.color(color.new(color.lime, 70), "Bull pre-confirmed", group=grpCol)
+bullConfCol  = input.color(color.new(color.lime,  0), "Bull confirmed",     group=grpCol)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 7) Limits / maintenance
+grpLim = "7) Limits"
+maxKeep = input.int(450, "Max dots to keep", minval=50, maxval=500, group=grpLim)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 8) Alerts
+grpAlert = "8) Alerts"
+alertOnConfirmed = input.bool(true, "Alert: Confirmed (Bull + Bear)", group=grpAlert)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Helpers
+calcSymbol = (calcSymbolStr == "") ? syminfo.tickerid : calcSymbolStr
+calcTF     = (calcTF_in == "") ? timeframe.period : calcTF_in
+
+sameSymbol = ticker.standard(calcSymbol) == ticker.standard(syminfo.tickerid)
+sameTF     = calcTF == timeframe.period
+strictOK   = sameSymbol and sameTF
+
+tick = syminfo.mintick
+bearOffY = tick * (useSeparateOffsets ? offsetTicksBear : offsetTicksCommon)
+bullOffY = tick * (useSeparateOffsets ? offsetTicksBull : offsetTicksCommon)
+
+f_size(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.huge
+
+dotSize = f_size(sizeOpt)
+
+// MACD histogram as function (нужно для request.security)
+f_hist() =>
+    [m, s, h] = ta.macd(close, fastLen, slowLen, signalLen)
+    h
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Series for calculations (can be other symbol/TF)
+histCalc = request.security(calcSymbol, calcTF, f_hist())
+hiCalc   = request.security(calcSymbol, calcTF, high)
+loCalc   = request.security(calcSymbol, calcTF, low)
+
+phCalc = request.security(calcSymbol, calcTF, ta.pivothigh(high, left, right))
+plCalc = request.security(calcSymbol, calcTF, ta.pivotlow(low,  left, right))
+
+phHistPivot = request.security(calcSymbol, calcTF, not na(ta.pivothigh(high, left, right)) ? f_hist()[right] : na)
+plHistPivot = request.security(calcSymbol, calcTF, not na(ta.pivotlow(low,  left, right)) ? f_hist()[right] : na)
+
+phTimePivot = request.security(calcSymbol, calcTF, not na(ta.pivothigh(high, left, right)) ? time[right] : na)
+plTimePivot = request.security(calcSymbol, calcTF, not na(ta.pivotlow(low,  left, right)) ? time[right] : na)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Dot storage (labels, fixed at price) — stored dots
+var label[] dots = array.new<label>()
+
+f_push(label lb) =>
+    array.push(dots, lb)
+    if array.size(dots) > maxKeep
+        label.delete(array.shift(dots))
+
+f_create_bar(int x, float y, color col) =>
+    bool isCircle = markerType == "Circle"
+    string txt = isCircle ? "" : dotChar
+    color bg = isCircle ? col : color.new(col, 100)
+    color tc = isCircle ? color.new(col, 100) : col
+    label.new(x, y, txt,
+        xloc=xloc.bar_index, yloc=yloc.price,
+        style=isCircle ? label.style_circle : label.style_none,
+        size=dotSize,
+        color=bg, textcolor=tc)
+
+f_create_time(int t, float y, color col) =>
+    bool isCircle = markerType == "Circle"
+    string txt = isCircle ? "" : dotChar
+    color bg = isCircle ? col : color.new(col, 100)
+    color tc = isCircle ? color.new(col, 100) : col
+    label.new(t, y, txt,
+        xloc=xloc.bar_time, yloc=yloc.price,
+        style=isCircle ? label.style_circle : label.style_none,
+        size=dotSize,
+        color=bg, textcolor=tc)
+
+f_makeLabel_bar(int x, float y, color col) =>
+    label lb = f_create_bar(x, y, col)
+    f_push(lb)
+    lb
+
+f_makeLabel_time(int t, float y, color col) =>
+    label lb = f_create_time(t, y, col)
+    f_push(lb)
+    lb
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// State (calc space)
+var float lastPHPrice = na
+var float lastPHHist  = na
+var float lastPLPrice = na
+var float lastPLHist  = na
+
+var bool  bearForming = false
+var bool  bullForming = false
+var float bearExtreme = na
+var float bullExtreme = na
+
+var int lastBearPivotTime = na
+var int lastBullPivotTime = na
+// Confirmed alert flags (one-bar events)
+bool bearConfirmedSignal = false
+bool bullConfirmedSignal = false
+
+// Pre-confirmed (НЕ кладём в dots-array; всегда 0..1 метка на сторону)
+var label bearPreLb = na
+var label bullPreLb = na
+
+f_preSet(label cur, int x, float y, color col) =>
+    if not na(cur)
+        label.delete(cur)
+    // вернуть новый label (глобальные переменные внутри функции НЕ трогаем)
+    f_create_bar(x, y, col)
+
+f_preClear(label cur) =>
+    if not na(cur)
+        label.delete(cur)
+    // Явно задаём тип результата как label, чтобы Pine не путался с na
+    label res = na
+    res
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 1) Forming + continuation (EARLY)
+// Conditions are evaluated on calc series, markers are drawn on CURRENT chart high/low.
+bearCond = not na(lastPHPrice) and hiCalc > lastPHPrice and histCalc < lastPHHist
+bullCond = not na(lastPLPrice) and loCalc < lastPLPrice and histCalc > lastPLHist
+
+// Bear start
+if showForming and bearCond and not bearForming
+    bearForming := true
+    bearExtreme := hiCalc
+    f_makeLabel_bar(bar_index, high + bearOffY, bearStartCol)
+    if showPreConfirmed
+        bearPreLb := f_preSet(bearPreLb, bar_index, high + bearOffY, bearPreCol)
+
+// Bear continuation only when calc extreme обновился
+if bearForming
+    if bearCond
+        if showContinuation and hiCalc > bearExtreme
+            bearExtreme := hiCalc
+            f_makeLabel_bar(bar_index, high + bearOffY, bearContCol)
+            if showPreConfirmed
+                bearPreLb := f_preSet(bearPreLb, bar_index, high + bearOffY, bearPreCol)
+    else
+        bearForming := false
+        bearExtreme := na
+        // если условие сломалось — pre-кандидат больше не актуален
+        if showPreConfirmed
+            bearPreLb := f_preClear(bearPreLb)
+
+// Bull start
+if showForming and bullCond and not bullForming
+    bullForming := true
+    bullExtreme := loCalc
+    f_makeLabel_bar(bar_index, low - bullOffY, bullStartCol)
+    if showPreConfirmed
+        bullPreLb := f_preSet(bullPreLb, bar_index, low - bullOffY, bullPreCol)
+
+// Bull continuation
+if bullForming
+    if bullCond
+        if showContinuation and loCalc < bullExtreme
+            bullExtreme := loCalc
+            f_makeLabel_bar(bar_index, low - bullOffY, bullContCol)
+            if showPreConfirmed
+                bullPreLb := f_preSet(bullPreLb, bar_index, low - bullOffY, bullPreCol)
+    else
+        bullForming := false
+        bullExtreme := na
+        bullPreLb := f_preClear(bullPreLb)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 2) Confirmed (pivot, NO repaint)
+
+// reset per bar
+bearConfirmedSignal := false
+bullConfirmedSignal := false
+
+// Pivot High (bear)
+if not na(phCalc) and not na(phHistPivot)
+    bool bearConfirmed = not na(lastPHPrice) and phCalc > lastPHPrice and phHistPivot < lastPHHist
+
+    // update refs ALWAYS (so forming/cont can work even when showConfirmed=false)
+    lastPHPrice := phCalc
+    lastPHHist  := phHistPivot
+    bearForming := false
+    bearExtreme := na
+
+    if bearConfirmed
+        bearConfirmedSignal := true
+
+        if preOnConfirm == "Delete"
+            bearPreLb := f_preClear(bearPreLb)
+
+        if showConfirmed
+            if confirmedMode == "Strict"
+                if strictOK
+                    f_makeLabel_bar(bar_index - right, high[right] + bearOffY, bearConfCol)
+            else
+                if not na(phTimePivot) and phTimePivot != lastBearPivotTime
+                    lastBearPivotTime := phTimePivot
+                    f_makeLabel_time(phTimePivot, phCalc + bearOffY, bearConfCol)
+
+
+// Pivot Low (bull)
+if not na(plCalc) and not na(plHistPivot)
+    bool bullConfirmed = not na(lastPLPrice) and plCalc < lastPLPrice and plHistPivot > lastPLHist
+
+    // update refs ALWAYS
+    lastPLPrice := plCalc
+    lastPLHist  := plHistPivot
+    bullForming := false
+    bullExtreme := na
+
+    if bullConfirmed
+        bullConfirmedSignal := true
+
+        if preOnConfirm == "Delete"
+            bullPreLb := f_preClear(bullPreLb)
+
+        if showConfirmed
+            if confirmedMode == "Strict"
+                if strictOK
+                    f_makeLabel_bar(bar_index - right, low[right] - bullOffY, bullConfCol)
+            else
+                if not na(plTimePivot) and plTimePivot != lastBullPivotTime
+                    lastBullPivotTime := plTimePivot
+                    f_makeLabel_time(plTimePivot, plCalc - bullOffY, bullConfCol)
+
+alertcondition(
+     alertOnConfirmed and (bearConfirmedSignal or bullConfirmedSignal),
+     title="MACD Divergence Confirmed (Bull/Bear)",
+     message="Confirmed MACD divergence on {{ticker}} ({{interval}}). Close={{close}}"
+)
+
