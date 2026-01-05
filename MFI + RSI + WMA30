@@ -1,0 +1,218 @@
+//@version=6
+indicator("MFI + RSI + WMA30 Tool", shorttitle="MFI_RSI30", overlay=false, max_bars_back=5000, max_labels_count=500, format=format.price, precision=1)
+
+// === ГРУППЫ ДЛЯ UI ===
+mfiGroup = "MFI"
+rsiGroup = "RSI"
+rsi2Group = "2nd RSI"
+wmaGroup = "WMA 30 (RSI)"
+stochGroup = "Stochastic"
+bgGroup = "Background"
+styleGroup = "Style"
+alertsGroup = "Alerts"
+enableBSOnlyAlert  = input.bool(false, "Alert: B/S labels only", group = alertsGroup)
+enableBuyOnlyAlert = input.bool(false, "Alert: B only",          group = alertsGroup)
+enableSellOnlyAlert= input.bool(false, "Alert: S only",          group = alertsGroup)
+
+//------------------------------------------------------
+// MFI
+//------------------------------------------------------
+mfiLen = input.int(14, "Длина", group=mfiGroup, minval=1)
+mfiLow = input.float(20, "Lower", group=mfiGroup)
+mfiHigh = input.float(80, "Upper", group=mfiGroup)
+mfiHiOBOS = input.bool(true, "Highlight Oversold/Overbought?", group=mfiGroup)
+
+//------------------------------------------------------
+// RSI (основной)
+//------------------------------------------------------
+rsiLen = input.int(14, "Длина", group=rsiGroup, minval=1)
+rsiHigh = input.float(70, "Upper Line Value?", group=rsiGroup)
+rsiLow = input.float(30, "Lower Line Value?", group=rsiGroup)
+showMid = input.bool(false, "Show Mid Line?", group=rsiGroup)
+
+// Подсветки и буквы
+showBgLevels = input.bool(true, "Show Back Ground Highlights When RSI Is Above/Below High/Low Lines?", group=bgGroup)
+showBgCross = input.bool(true, "Show Back Ground Highlights When RSI Cross?", group=bgGroup)
+showBSLetters = input.bool(true, "Show 'B' and 'S' Letters When RSI Crosses High/Low Line?", group=bgGroup)
+
+// Таймфрейм RSI
+useCurrentTF = input.bool(true, "Use Current Chart Resolution?", group=rsiGroup)
+rsiTF = input.timeframe("60", "Use Different Timeframe? Uncheck Box Above", group=rsiGroup)
+
+//------------------------------------------------------
+// Второй RSI
+//------------------------------------------------------
+showRsi2 = input.bool(false, "Show 2nd RSI?", group=rsi2Group)
+rsi2TF = input.timeframe("D", "Use 2nd RSI? Check Box Above", group=rsi2Group)
+plotRsi2SameTF = input.bool(false, "Use 2nd RSI Plot On Same Timeframe?", group=rsi2Group)
+rsi2Len = input.int(14, "2nd RSI Length", group=rsi2Group, minval=1)
+
+//------------------------------------------------------
+// WMA от RSI
+//------------------------------------------------------
+showWma = input.bool(true, "Show WMA30 (RSI)?", group=wmaGroup)
+wmaLen = input.int(30, "WMA Length", group=wmaGroup, minval=1)
+
+//------------------------------------------------------
+// STOCHASTIC
+//------------------------------------------------------
+showStoch      = input.bool(false, "Show Stochastic?", group=stochGroup)
+stochLenK      = input.int(14, "Stoch %K Length", group=stochGroup, minval=1)
+stochSmooth    = input.int(5, "Stoch Smoothing", group=stochGroup, minval=1)
+stochDLen      = input.int(3, "Stoch %D Length", group=stochGroup, minval=1)
+
+// новый блок
+stochScaleOn   = input.bool(true, "Scale Stoch amplitude", group=stochGroup)
+stochScale     = input.float(0.6, "Stoch scale factor", group=stochGroup, minval=0.1, maxval=2.0)
+
+//------------------------------------------------------
+// АЛЕРТЫ
+//------------------------------------------------------
+enableCombinedAlert = input.bool(true, "Enable Combined Alert", group=alertsGroup)
+
+//------------------------------------------------------
+// СТИЛИ (цвета)
+//------------------------------------------------------
+mfiColor = input.color(#ffc56b, "MFI Color", group=styleGroup)
+rsiColor = input.color(color.white, "RSI Color", group=styleGroup)
+rsi2Color = input.color(#656565, "2nd RSI Color", group=styleGroup)
+wmaColor = input.color(#000000, "WMA30 Color", group=styleGroup)
+stochKColor = input.color(#00bcd4, "Stoch %K Color", group=styleGroup)
+stochDColor = input.color(#ffeb3b, "Stoch %D Color", group=styleGroup)
+
+// Линии уровней
+upperLineColor = input.color(color.new(#ffffff, 40), "RSI 70 Line", group=styleGroup)
+lowerLineColor = input.color(color.new(#ffffff, 40), "RSI 30 Line", group=styleGroup)
+midLineColor = input.color(color.new(color.gray, 70), "RSI 50 Line", group=styleGroup)
+line80Color = input.color(color.new(#f8f8f8, 0), "80 Line", group=styleGroup)
+line20Color = input.color(color.new(#ffffff, 0), "20 Line", group=styleGroup)
+
+// Фоны
+bgComboOsColor = input.color(color.new(#999999, 80), "BG RSI & MFI Oversold", group=bgGroup)
+bgRsiBelowColor = input.color(color.new(#00897b, 80), "BG RSI Below Lower", group=bgGroup)
+bgRsiAboveColor = input.color(color.new(#ef6c00, 80), "BG RSI Above Upper", group=bgGroup)
+bgCrossUpColor = input.color(color.new(#11987b, 11), "BG RSI Cross Up", group=bgGroup)
+bgCrossDownColor = input.color(color.new(#dc5f0b, 13), "BG RSI Cross Down", group=bgGroup)
+
+// Пороги для комбинированного oversold
+osRsiLevel = input.float(40.0, "RSI Oversold Level", group=bgGroup)
+osMfiLevel = input.float(20.0, "MFI Oversold Level", group=bgGroup)
+
+//------------------------------------------------------
+// РАСЧЁТ ИНДИКАТОРОВ
+//------------------------------------------------------
+src = close
+
+// MFI
+mfi_raw = ta.mfi(hlc3, mfiLen)
+
+// RSI №1
+rsi_base = ta.rsi(src, rsiLen)
+rsi_tf = request.security(syminfo.tickerid, rsiTF, rsi_base)
+rsi_1 = useCurrentTF ? rsi_base : rsi_tf
+
+// WMA от RSI №1
+wma_rsi = ta.wma(rsi_1, wmaLen)
+
+// RSI №2
+rsi2_base = ta.rsi(src, rsi2Len)
+rsi2_tf = request.security(syminfo.tickerid, rsi2TF, rsi2_base)
+rsi_2 = plotRsi2SameTF ? rsi2_base : rsi2_tf
+
+// STOCHASTIC (0–100, как RSI)
+stochK_raw = ta.stoch(high, low, close, stochLenK)
+stochK     = ta.sma(stochK_raw, stochSmooth)
+stochD     = ta.sma(stochK, stochDLen)
+
+// сжатие амплитуды вокруг 50, чтобы был ближе по масштабу к RSI
+stochMid       = 50.0
+stochK_scaled  = stochScaleOn ? (stochK - stochMid) * stochScale + stochMid : stochK
+stochD_scaled  = stochScaleOn ? (stochD - stochMid) * stochScale + stochMid : stochD
+
+
+//------------------------------------------------------
+// СОСТОЯНИЯ RSI ДЛЯ ФОНОВ И БУКВ
+//------------------------------------------------------
+rsiAboveHigh = rsi_1 > rsiHigh
+rsiBelowLow = rsi_1 < rsiLow
+crossUpLow = ta.crossover(rsi_1, rsiLow)
+crossDownHigh = ta.crossunder(rsi_1, rsiHigh)
+
+//------------------------------------------------------
+// ФОНЫ (как вертикальные полосы)
+//------------------------------------------------------
+
+// Комбинированный oversold: RSI < osRsiLevel и MFI < osMfiLevel
+comboOversold = (rsi_1 < osRsiLevel) and (mfi_raw < osMfiLevel)
+bgcolor(mfiHiOBOS and comboOversold ? bgComboOsColor : na)
+
+// RSI выше/ниже уровней
+bgcolor(showBgLevels and rsiBelowLow ? bgRsiBelowColor : na)
+bgcolor(showBgLevels and rsiAboveHigh ? bgRsiAboveColor : na)
+
+// Подсветка пересечений уровней RSI
+bgcolor(showBgCross and crossUpLow ? bgCrossUpColor : na)
+bgcolor(showBgCross and crossDownHigh ? bgCrossDownColor : na)
+
+//------------------------------------------------------
+// КОМБИНИРОВАННЫЙ АЛЕРТ
+//------------------------------------------------------
+condRsiLevels = showBgLevels and (rsiBelowLow or rsiAboveHigh)
+condComboOs   = mfiHiOBOS and comboOversold
+condB         = showBSLetters and crossUpLow
+condS         = showBSLetters and crossDownHigh
+condLabels    = condB or condS
+
+// 1) старый комбинированный алерт (фон + oversold + B/S)
+combinedAlert = enableCombinedAlert and (condRsiLevels or condComboOs or condLabels)
+alertcondition(combinedAlert,
+     title   = "MFI_RSI30 Combined Signal",
+     message = "MFI_RSI30: RSI levels / Oversold combo / B-S label signal")
+
+// 2) только лэйблы B/S
+bsOnlyAlert = enableBSOnlyAlert and condLabels
+alertcondition(bsOnlyAlert,
+     title   = "MFI_RSI30 B/S labels",
+     message = "MFI_RSI30: B or S label")
+
+// 3) только B
+buyOnlyAlert = enableBuyOnlyAlert and condB
+alertcondition(buyOnlyAlert,
+     title   = "MFI_RSI30 B only",
+     message = "MFI_RSI30: B label")
+
+// 4) только S
+sellOnlyAlert = enableSellOnlyAlert and condS
+alertcondition(sellOnlyAlert,
+     title   = "MFI_RSI30 S only",
+     message = "MFI_RSI30: S label")
+
+//------------------------------------------------------
+// БУКВЫ B / S НА ПЕРЕСЕЧЕНИЯХ
+//------------------------------------------------------
+if showBSLetters
+    if crossUpLow
+        label.new(bar_index, rsiLow, "B", style=label.style_none, textcolor=#ffffff, size=size.normal)
+    if crossDownHigh
+        label.new(bar_index, rsiHigh, "S", style=label.style_none, textcolor=#ffffff, size=size.normal)
+
+//------------------------------------------------------
+// ЛИНИИ УРОВНЕЙ + ФОН 70–30
+//------------------------------------------------------
+rsiHighLine = hline(rsiHigh, "RSI 70", color=upperLineColor)
+rsiLowLine = hline(rsiLow, "RSI 30", color=lowerLineColor)
+fill(rsiHighLine, rsiLowLine, color=color.new(color.white, 90))
+hline(50, "RSI 50", color=showMid ? midLineColor : color.new(midLineColor, 100), linestyle=hline.style_dotted)
+hline(80, "Level 80", color=line80Color, linestyle=hline.style_dotted)
+hline(20, "Level 20", color=line20Color, linestyle=hline.style_dotted)
+
+//------------------------------------------------------
+// PLOT'Ы
+//------------------------------------------------------
+plot(mfi_raw, "MFI", color=mfiColor, linewidth=2)
+plot(rsi_1, "RSI", color=rsiColor, linewidth=2)
+plot(showWma ? wma_rsi : na, "WMA30 (RSI)", color=wmaColor, linewidth=2)
+plot(showRsi2 ? rsi_2 : na, "2nd RSI - Different Time Frame?", color=rsi2Color, linewidth=1)
+plot(showStoch ? stochK_scaled : na, "Stoch %K", color=stochKColor, linewidth=1)
+plot(showStoch ? stochD_scaled : na, "Stoch %D", color=stochDColor, linewidth=1)
+
