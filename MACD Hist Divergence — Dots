@@ -1,309 +1,1142 @@
-//@version=6
-indicator("MACD Hist Divergence — Dots", overlay=true, max_labels_count=500)
+//@version=5
+indicator("MACD + BB + WMA Tool", shorttitle="363_indi", overlay=true, max_bars_back=5000, max_lines_count=500, max_labels_count=500, max_boxes_count=240)
 
-//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 1) Calculation source
-grpCalc = "1) Calculation source"
-calcSymbolStr = input.string("", "Calc symbol (empty = chart)", group=grpCalc,
-     tooltip="Пример: BINANCE:BTCUSDT. Пусто = текущий график.")
-calcTF_in = input.timeframe("", "Calc timeframe (empty = chart)", group=grpCalc)
-
-//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 2) MACD settings
-grpMacd = "2) MACD settings"
-fastLen   = input.int(12, "MACD Fast",   minval=1, group=grpMacd)
-slowLen   = input.int(26, "MACD Slow",   minval=1, group=grpMacd)
-signalLen = input.int(9,  "MACD Signal", minval=1, group=grpMacd)
-
-//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 3) Pivot settings (for confirmed stage)
-grpPiv = "3) Pivot settings"
-left  = input.int(5, "Pivot Left",  minval=1, group=grpPiv)
-right = input.int(5, "Pivot Right", minval=1, group=grpPiv)
-
-//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 4) What to show
-grpShow = "4) What to show"
-showForming      = input.bool(true,  "Show forming (repaints)", group=grpShow)
-showContinuation = input.bool(true,  "Show continuation (new calc extremes only)", group=grpShow)
-showConfirmed    = input.bool(true,  "Show confirmed (no repaint)", group=grpShow)
-
-showPreConfirmed = input.bool(false, "Show pre-confirmed (repaints)", group=grpShow,
-     tooltip="Ранний кандидат confirmed. Может исчезать/перерисовываться.")
-preOnConfirm = input.string("Delete", "Pre-confirmed on confirm", options=["Delete","Keep"], group=grpShow,
-     tooltip="Delete: удалить pre-confirmed когда появится confirmed.\nKeep: оставить pre-confirmed на графике.")
-
-confirmedMode = input.string("Strict", "Confirmed placement", options=["Strict","By pivot time"], group=grpShow,
-     tooltip="Strict: confirmed рисуется строго на pivot-свече ТЕКУЩЕГО графика, только если calc=chart.\nBy pivot time: рисует по времени pivot-свечи (подходит для HTF расчётов).")
-
-//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 5) Marker style
-grpStyle = "5) Marker style"
-markerType = input.string("Circle", "Marker type", options=["Circle","Text dot"], group=grpStyle,
-     tooltip="Circle: маленький кружок (label.style_circle).\nText dot: символ точки '•' без фона.")
-dotChar = input.string("•", "Dot char (for Text dot)", group=grpStyle)
-
-sizeOpt = input.string("Tiny", "Marker size", options=["Tiny","Small","Normal","Large","Huge"], group=grpStyle)
-
-useSeparateOffsets = input.bool(true, "Separate offsets for Bear/Bull", group=grpStyle)
-offsetTicksCommon  = input.int(0, "Offset (ticks) common", minval=0, group=grpStyle)
-offsetTicksBear    = input.int(0, "Offset (ticks) Bear (above)", minval=0, group=grpStyle)
-offsetTicksBull    = input.int(0, "Offset (ticks) Bull (below)", minval=0, group=grpStyle)
-
-//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 6) Colors
-grpCol = "6) Colors"
-bearStartCol = input.color(color.new(color.red,  75), "Bear forming",       group=grpCol)
-bearContCol  = input.color(color.new(color.red,  55), "Bear continuation",  group=grpCol)
-bearPreCol   = input.color(color.new(color.red,  70), "Bear pre-confirmed", group=grpCol)
-bearConfCol  = input.color(color.new(color.red,   0), "Bear confirmed",     group=grpCol)
-
-bullStartCol = input.color(color.new(color.lime, 75), "Bull forming",       group=grpCol)
-bullContCol  = input.color(color.new(color.lime, 55), "Bull continuation",  group=grpCol)
-bullPreCol   = input.color(color.new(color.lime, 70), "Bull pre-confirmed", group=grpCol)
-bullConfCol  = input.color(color.new(color.lime,  0), "Bull confirmed",     group=grpCol)
-
-//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 7) Limits / maintenance
-grpLim = "7) Limits"
-maxKeep = input.int(450, "Max dots to keep", minval=50, maxval=500, group=grpLim)
-//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 8) Alerts
-grpAlert = "8) Alerts"
-alertOnConfirmed = input.bool(true, "Alert: Confirmed (Bull + Bear)", group=grpAlert)
-
-//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Helpers
-calcSymbol = (calcSymbolStr == "") ? syminfo.tickerid : calcSymbolStr
-calcTF     = (calcTF_in == "") ? timeframe.period : calcTF_in
-
-sameSymbol = ticker.standard(calcSymbol) == ticker.standard(syminfo.tickerid)
-sameTF     = calcTF == timeframe.period
-strictOK   = sameSymbol and sameTF
-
-tick = syminfo.mintick
-bearOffY = tick * (useSeparateOffsets ? offsetTicksBear : offsetTicksCommon)
-bullOffY = tick * (useSeparateOffsets ? offsetTicksBull : offsetTicksCommon)
-
-f_size(string s) =>
-    switch s
-        "Tiny"   => size.tiny
-        "Small"  => size.small
-        "Normal" => size.normal
-        "Large"  => size.large
-        => size.huge
-
-dotSize = f_size(sizeOpt)
-
-// MACD histogram as function (нужно для request.security)
-f_hist() =>
-    [m, s, h] = ta.macd(close, fastLen, slowLen, signalLen)
-    h
-
-//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Series for calculations (can be other symbol/TF)
-histCalc = request.security(calcSymbol, calcTF, f_hist())
-hiCalc   = request.security(calcSymbol, calcTF, high)
-loCalc   = request.security(calcSymbol, calcTF, low)
-
-phCalc = request.security(calcSymbol, calcTF, ta.pivothigh(high, left, right))
-plCalc = request.security(calcSymbol, calcTF, ta.pivotlow(low,  left, right))
-
-phHistPivot = request.security(calcSymbol, calcTF, not na(ta.pivothigh(high, left, right)) ? f_hist()[right] : na)
-plHistPivot = request.security(calcSymbol, calcTF, not na(ta.pivotlow(low,  left, right)) ? f_hist()[right] : na)
-
-phTimePivot = request.security(calcSymbol, calcTF, not na(ta.pivothigh(high, left, right)) ? time[right] : na)
-plTimePivot = request.security(calcSymbol, calcTF, not na(ta.pivotlow(low,  left, right)) ? time[right] : na)
-
-//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Dot storage (labels, fixed at price) — stored dots
-var label[] dots = array.new<label>()
-
-f_push(label lb) =>
-    array.push(dots, lb)
-    if array.size(dots) > maxKeep
-        label.delete(array.shift(dots))
-
-f_create_bar(int x, float y, color col) =>
-    bool isCircle = markerType == "Circle"
-    string txt = isCircle ? "" : dotChar
-    color bg = isCircle ? col : color.new(col, 100)
-    color tc = isCircle ? color.new(col, 100) : col
-    label.new(x, y, txt,
-        xloc=xloc.bar_index, yloc=yloc.price,
-        style=isCircle ? label.style_circle : label.style_none,
-        size=dotSize,
-        color=bg, textcolor=tc)
-
-f_create_time(int t, float y, color col) =>
-    bool isCircle = markerType == "Circle"
-    string txt = isCircle ? "" : dotChar
-    color bg = isCircle ? col : color.new(col, 100)
-    color tc = isCircle ? color.new(col, 100) : col
-    label.new(t, y, txt,
-        xloc=xloc.bar_time, yloc=yloc.price,
-        style=isCircle ? label.style_circle : label.style_none,
-        size=dotSize,
-        color=bg, textcolor=tc)
-
-f_makeLabel_bar(int x, float y, color col) =>
-    label lb = f_create_bar(x, y, col)
-    f_push(lb)
-    lb
-
-f_makeLabel_time(int t, float y, color col) =>
-    label lb = f_create_time(t, y, col)
-    f_push(lb)
-    lb
-
-//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// State (calc space)
-var float lastPHPrice = na
-var float lastPHHist  = na
-var float lastPLPrice = na
-var float lastPLHist  = na
-
-var bool  bearForming = false
-var bool  bullForming = false
-var float bearExtreme = na
-var float bullExtreme = na
-
-var int lastBearPivotTime = na
-var int lastBullPivotTime = na
-// Confirmed alert flags (one-bar events)
-bool bearConfirmedSignal = false
-bool bullConfirmedSignal = false
-
-// Pre-confirmed (НЕ кладём в dots-array; всегда 0..1 метка на сторону)
-var label bearPreLb = na
-var label bullPreLb = na
-
-f_preSet(label cur, int x, float y, color col) =>
-    if not na(cur)
-        label.delete(cur)
-    // вернуть новый label (глобальные переменные внутри функции НЕ трогаем)
-    f_create_bar(x, y, col)
-
-f_preClear(label cur) =>
-    if not na(cur)
-        label.delete(cur)
-    // Явно задаём тип результата как label, чтобы Pine не путался с na
-    label res = na
-    res
+// === Группы для UI ===
+wmaGroup    = "WMA"
+macdGroup   = "MACD"
+bbGroup     = "Bollinger Bands"
+rsiGroup    = "RSI + EMA + WMA"
+divGroup    = "Divergence"
+stopGroup   = "STOP"
+alertsGroup = "Alerts"
+trendGroup  = "Trendlines"
+patternsGroup = "Patterns"
+dayBoxGroup = "HTF: Daily Box"
+volBoxGroup = "HTF: Volume Box"
+htfTrendGroup = "HTF Trendlines 2.0"
 
 
-//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 1) Forming + continuation (EARLY)
-// Conditions are evaluated on calc series, markers are drawn on CURRENT chart high/low.
-bearCond = not na(lastPHPrice) and hiCalc > lastPHPrice and histCalc < lastPHHist
-bullCond = not na(lastPLPrice) and loCalc < lastPLPrice and histCalc > lastPLHist
 
-// Bear start
-if showForming and bearCond and not bearForming
-    bearForming := true
-    bearExtreme := hiCalc
-    f_makeLabel_bar(bar_index, high + bearOffY, bearStartCol)
-    if showPreConfirmed
-        bearPreLb := f_preSet(bearPreLb, bar_index, high + bearOffY, bearPreCol)
+// === WMA: minimal settings ===
+wmaTF            = input.timeframe("", "WMA Timeframe", group = wmaGroup)  // "" = текущий ТФ
+wmaLength        = input.int(50, "WMA Length", minval = 1, group = wmaGroup)
+wmaBandStrength  = input.float(1.0, "WMA Band Strength", step = 0.1, group = wmaGroup)
+wmaVolPower      = input.float(1.5, "WMA Volatility Power", minval = 0.1, step = 0.1, group = wmaGroup)
+wmaAtrSmoothLen  = input.int(14, "ATR Smooth Length", minval = 1, group = wmaGroup)
+//=== Trends2.0  UI ===
+htfTrendEnable     = input.bool(true,  "Show HTF trendlines",              group=htfTrendGroup)
+htfTrendTF         = input.timeframe("240", "HTF trend timeframe",         group=htfTrendGroup)
+htfTrendSourceMode = input.string("Bodies", "Price source", options=["Bodies","Wicks"], group=htfTrendGroup)
+htfMaxRange        = input.int(300,   "Max bars range (current TF)",       minval=20, maxval=1500, group=htfTrendGroup)
+htfNoiseReduction  = input.int(0,     "Noise reduction (EMA depth)",       minval=0, maxval=20,   group=htfTrendGroup)
+htfShowRes         = input.bool(true, "Show resistance (down trend)",      group=htfTrendGroup)
+htfShowSup         = input.bool(true, "Show support (up trend)",           group=htfTrendGroup)
+htfLineWidth       = input.int(3,     "Line width",                        minval=1, maxval=5,    group=htfTrendGroup)
+htfLineStyleStr    = input.string("Dashed", "Line style", options=["Solid","Dashed","Dotted"], group=htfTrendGroup)
+htfResColor        = input.color(color.new(#801922, 0), "Downtrend color", group=htfTrendGroup)
+htfSupColor        = input.color(color.new(#0a6250, 0), "Uptrend color",   group=htfTrendGroup)
+htfExtendBars      = input.int(20, "Trend extend bars (L/R)", minval=0, maxval=500, group=htfTrendGroup)
+bbLengthInput = input.float(20.0, "Length", minval=1.0, step=0.1, group=bbGroup)
+bbMult        = input.float(2.0,  "Deviation Mult", minval=0.1, step=0.1, group=bbGroup)
+bbSrc         = input.source(close, "Source", group=bbGroup)
+bbShowLabels  = input.bool(true, "Show BB Midline Labels", group=bbGroup)
 
-// Bear continuation only when calc extreme обновился
-if bearForming
-    if bearCond
-        if showContinuation and hiCalc > bearExtreme
-            bearExtreme := hiCalc
-            f_makeLabel_bar(bar_index, high + bearOffY, bearContCol)
-            if showPreConfirmed
-                bearPreLb := f_preSet(bearPreLb, bar_index, high + bearOffY, bearPreCol)
+// === WMA: internal constants (не в UI) ===
+wmaAtrLen        = 14
+wmaVolLookback   = 100
+wmaVolMin        = 0.5
+wmaVolMax        = 2.0
+wmaColor         = color.new(#000000, 0)
+wmaLineWidth     = 4
+wmaUpperFillColor= color.new(#0a6250, 50)
+wmaLowerFillColor= color.new(#801922, 50)
+
+// === WMA: calc на выбранном таймфрейме (WMA), ATR на текущем ТФ ===
+wmaSrc   = request.security(syminfo.tickerid, wmaTF, close, lookahead = barmerge.lookahead_on)
+wmaValue = ta.wma(wmaSrc, wmaLength)
+
+// ATR уже без request.security → на текущем таймфрейме
+atrRaw   = ta.atr(wmaAtrLen)
+
+atrWma         = wmaAtrSmoothLen > 1 ? ta.rma(atrRaw, wmaAtrSmoothLen) : atrRaw
+atrBase        = ta.sma(atrWma, wmaVolLookback)
+atrNorm        = atrBase > 0.0 ? atrWma / atrBase : 1.0
+atrNormClamped = math.max(wmaVolMin, math.min(wmaVolMax, atrNorm))
+volFactor      = math.pow(atrNormClamped, wmaVolPower)
+atrWidth       = atrWma * wmaBandStrength * volFactor
+
+wmaUpperBand   = wmaValue + atrWidth
+wmaLowerBand   = wmaValue - atrWidth
+
+
+// === WMA: plots ===
+wmaPlot      = plot(wmaValue,      title = "WMA",            color = wmaColor, linewidth = wmaLineWidth)
+wmaUpperPlot = plot(wmaUpperBand,  title = "WMA Upper Band", color = color.new(wmaUpperFillColor, 0), linewidth = 1, style = plot.style_linebr)
+wmaLowerPlot = plot(wmaLowerBand,  title = "WMA Lower Band", color = color.new(wmaLowerFillColor, 0), linewidth = 1, style = plot.style_linebr)
+fill(wmaUpperPlot, wmaPlot, title = "Fill Above WMA", color = wmaUpperFillColor)
+fill(wmaLowerPlot, wmaPlot, title = "Fill Below WMA", color = wmaLowerFillColor)
+
+// === WMA: угол наклона (псевдо-градусы) ===
+showWmaAngle  = input.bool(true, "Show WMA Angle", group = wmaGroup)
+wmaAngleLen   = input.int(10, "Angle Lookback (bars)", minval = 1, maxval = 200, group = wmaGroup)
+wmaAngleScale = input.float(1.0, "Angle Sensitivity", minval = 0.1, maxval = 10.0, step = 0.1, group = wmaGroup)
+
+bool  wmaAngleValid   = bar_index >= wmaAngleLen and not na(wmaValue[wmaAngleLen]) and wmaValue[wmaAngleLen] != 0.0
+float wmaDeltaPctTot  = wmaAngleValid ? (wmaValue - wmaValue[wmaAngleLen]) / wmaValue[wmaAngleLen] * 100.0 : 0.0
+float wmaDeltaPctBar  = wmaAngleValid ? wmaDeltaPctTot / wmaAngleLen : 0.0      // % на 1 бар
+float wmaAngleRad     = wmaAngleValid ? math.atan(wmaDeltaPctBar * wmaAngleScale) : 0.0
+float wmaAngleDeg     = wmaAngleRad * 180.0 / math.pi
+float wmaAngleRound   = math.round(wmaAngleDeg)
+
+color wmaAngleColor   = wmaAngleRound > 0 ? color.new(#0a6250, 0) : wmaAngleRound < -0 ? color.new(#801922, 0) : color.new(#000000, 0)
+var   label wmaAngleLabel = na
+
+if showWmaAngle and barstate.islast and wmaAngleValid
+    string angleText = str.tostring(wmaAngleRound, "#") + "°"
+    int    xPos      = bar_index + 3
+    float  yPos      = wmaValue
+    if na(wmaAngleLabel)
+        wmaAngleLabel := label.new(xPos, yPos, angleText, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, color = color.new(#000000, 100), textcolor = wmaAngleColor, size = size.large)
     else
-        bearForming := false
-        bearExtreme := na
-        // если условие сломалось — pre-кандидат больше не актуален
-        if showPreConfirmed
-            bearPreLb := f_preClear(bearPreLb)
+        label.set_x(wmaAngleLabel, xPos)
+        label.set_y(wmaAngleLabel, yPos)
+        label.set_text(wmaAngleLabel, angleText)
+        label.set_textcolor(wmaAngleLabel, wmaAngleColor)
 
-// Bull start
-if showForming and bullCond and not bullForming
-    bullForming := true
-    bullExtreme := loCalc
-    f_makeLabel_bar(bar_index, low - bullOffY, bullStartCol)
-    if showPreConfirmed
-        bullPreLb := f_preSet(bullPreLb, bar_index, low - bullOffY, bullPreCol)
 
-// Bull continuation
-if bullForming
-    if bullCond
-        if showContinuation and loCalc < bullExtreme
-            bullExtreme := loCalc
-            f_makeLabel_bar(bar_index, low - bullOffY, bullContCol)
-            if showPreConfirmed
-                bullPreLb := f_preSet(bullPreLb, bar_index, low - bullOffY, bullPreCol)
+// === STOCH + MFI BLOCK (Stoch + RSI + MFI + WMA-TREND сигналы на цене) ===
+
+// --- НАСТРОЙКИ (UI) ---
+smGroup           = "Stoch+MFI Block"
+smShowBlock       = input.bool(true,  "Enable Stoch+MFI block",           group = smGroup)
+smStochLenK       = input.int(24,     "Stoch %K Length",                  group = smGroup, minval = 1)
+smStochSmooth     = input.int(4,      "Stoch Smoothing",                  group = smGroup, minval = 1)
+smStochDLen       = input.int(6,      "Stoch %D Length",                  group = smGroup, minval = 1)
+smRsiLen          = input.int(14,     "RSI Length (block)",               group = smGroup, minval = 1)
+smMfiLen          = input.int(14,     "MFI Length (block)",               group = smGroup, minval = 1)
+smRsiHigh         = input.float(70.0, "RSI High level",                   group = smGroup)
+smRsiLow          = input.float(30.0, "RSI Low level",                    group = smGroup)
+smMfiOsLevel      = input.float(20.0, "MFI Oversold level",               group = smGroup)
+smWmaLen          = input.int(30,     "RSI WMA Length",                   group = smGroup, minval = 1)
+smSellWmaLevel    = input.float(54.0, "Sell: WMA/Stoch min level",        group = smGroup)
+smBuyWmaLevel     = input.float(45.0, "Buy: WMA/Stoch max level",         group = smGroup)
+smShowPriceLabels = input.bool(true,  "Show Stoch signals on price",      group = smGroup)
+// фильтр сигналов по основной WMA (wmaValue из блока WMA)
+smUseWmaFilter    = input.bool(true,  "Filter Stoch signals by main WMA", group = smGroup)
+
+// === РАСЧЁТЫ ===
+smSrc      = close
+smRsi      = ta.rsi(smSrc, smRsiLen)
+smWmaRsi   = ta.wma(smRsi, smWmaLen)
+smMfi      = ta.mfi(hlc3, smMfiLen)
+smStochRaw = ta.stoch(high, low, close, smStochLenK)
+smStochK   = ta.sma(smStochRaw, smStochSmooth)
+smStochD   = ta.sma(smStochK, smStochDLen)
+
+// --- RSI-сигналы (классические B/S) ---
+smCrossUpLow    = ta.crossover(smRsi, smRsiLow)
+smCrossDownHigh = ta.crossunder(smRsi, smRsiHigh)
+var int smLastBBar = na
+var int smLastSBar = na
+if smCrossUpLow
+    smLastBBar := bar_index
+if smCrossDownHigh
+    smLastSBar := bar_index
+
+// --- STOCH / ЗОНЫ ---
+smCrossStochUp   = ta.crossover(smStochK, smStochD)
+smCrossStochDown = ta.crossunder(smStochK, smStochD)
+smZoneAboveHigh  = smStochK > smRsiHigh
+smZoneBelowLow   = smStochK < smRsiLow
+smOversoldZone   = smMfi < smMfiOsLevel or smRsi < smRsiLow
+
+// --- УСЛОВИЯ SELL (без учёта фильтра) ---
+smSellCond1 = smCrossStochDown and smZoneAboveHigh
+smSellCond2 = smCrossStochDown and not na(smLastSBar) and (bar_index - smLastSBar <= 10)
+smSellCond3 = smCrossStochDown and (smWmaRsi > smSellWmaLevel) and (smStochK > smSellWmaLevel)
+
+// --- УСЛОВИЯ BUY (без учёта фильтра) ---
+smBuyCond1  = smCrossStochUp and (smZoneBelowLow or smOversoldZone)
+smBuyCond2  = smCrossStochUp and not na(smLastBBar) and (bar_index - smLastBBar <= 10)
+smBuyCond3  = smCrossStochUp and (smWmaRsi < smBuyWmaLevel) and (smStochK < smBuyWmaLevel)
+
+// --- БАЗОВЫЕ СИГНАЛЫ БЛОКА ---
+smSellBase = smShowBlock and (smSellCond1 or smSellCond2 or smSellCond3)
+smBuyBase  = smShowBlock and (smBuyCond1 or smBuyCond2 or smBuyCond3)
+
+// --- ФИЛЬТР ПО ОСНОВНОЙ WMA ---
+// S только если close >= wmaValue, B только если close <= wmaValue (если фильтр включён)
+smSellSignal = smSellBase and (not smUseWmaFilter or close >= wmaValue)
+smBuySignal  = smBuyBase  and (not smUseWmaFilter or close <= wmaValue)
+
+// --- ОБЪЕДИНЕНИЕ С КЛАССИЧЕСКИМИ B/S (по RSI) ---
+smRSI_B   = smCrossUpLow
+smRSI_S   = smCrossDownHigh
+smAnyBuy  = smBuySignal  or smRSI_B
+smAnySell = smSellSignal or smRSI_S
+
+// --- ЛЭЙБЛЫ НА ЦЕНЕ ---
+smAtr = ta.atr(14)
+if smShowBlock and smShowPriceLabels
+    if smSellSignal
+        label.new(bar_index, high + smAtr * 0.4, "S", style = label.style_label_down, textcolor = color.new(#c91e1e, 0), color = color.new(#000000, 0), size = size.small)
+    if smBuySignal
+        label.new(bar_index, low  - smAtr * 0.4, "B", style = label.style_label_up,   textcolor = color.new(#00e6cf, 0), color = color.new(#000000, 0), size = size.small)
+
+
+// === DAY BOX (HTF candle box) ===
+showDayBox     = input.bool(true, "Show Day Candle", group=dayBoxGroup)
+dayTF          = input.timeframe("D", "Day TF", group=dayBoxGroup)
+dayBodyColor   = input.color(color.new(#000000, 90), "Body Fill", group=dayBoxGroup)
+dayBorderColor = input.color(color.new(#000000, 0),  "Border/Wick Color", group=dayBoxGroup)
+dayBorderWidth = input.int(3, "Border/Wick Width", minval=1, maxval=5, group=dayBoxGroup)
+[dayO, dayH, dayL, dayC, dayTime] = request.security(syminfo.tickerid, dayTF, [open, high, low, close, time], lookahead=barmerge.lookahead_on)
+isNewDay = ta.change(dayTime)
+
+var box  dayBoxBody    = na
+var line dayWickTop    = na
+var line dayWickBottom = na
+var int  dayStartBar   = na
+
+if showDayBox
+    if isNewDay
+        float bodyTop = math.max(dayO, dayC)
+        float bodyBot = math.min(dayO, dayC)
+        dayStartBar := bar_index
+        dayBoxBody := box.new(bar_index, bodyTop, bar_index, bodyBot, xloc=xloc.bar_index, border_color=dayBorderColor, border_width=dayBorderWidth, bgcolor=dayBodyColor)
+        dayWickTop := line.new(bar_index, dayH, bar_index, bodyTop, xloc=xloc.bar_index, color=dayBorderColor, width=dayBorderWidth)
+        dayWickBottom := line.new(bar_index, dayL, bar_index, bodyBot, xloc=xloc.bar_index, color=dayBorderColor, width=dayBorderWidth)
     else
-        bullForming := false
-        bullExtreme := na
-        bullPreLb := f_preClear(bullPreLb)
+        if not na(dayBoxBody)
+            float bodyTop = math.max(dayO, dayC)
+            float bodyBot = math.min(dayO, dayC)
+            box.set_right(dayBoxBody, bar_index)
+            box.set_top(dayBoxBody, bodyTop)
+            box.set_bottom(dayBoxBody, bodyBot)
+            int midX = math.round((dayStartBar + bar_index) / 2.0)
+            line.set_xy1(dayWickTop, midX, dayH)
+            line.set_xy2(dayWickTop, midX, bodyTop)
+            line.set_xy1(dayWickBottom, midX, dayL)
+            line.set_xy2(dayWickBottom, midX, bodyBot)
 
 
-//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 2) Confirmed (pivot, NO repaint)
+// === HTF VOLUME PROFILE (POC + VA по объёму каждой HTF-свечи) ===
+vpShowBox   = input.bool(true,  "Show Volume Profile Box",  group=volBoxGroup)
+vpHtfTF     = input.timeframe("240", "HTF for Volume",      group=volBoxGroup)
+vpLookbackD = input.int(5,      "Lookback Days",            minval=1, group=volBoxGroup)
+vpBins      = input.int(24,     "Price Bins",               minval=8, maxval=100, group=volBoxGroup)
+vpVaVolPct  = input.float(10.0, "VA Volume % of candle",    minval=1.0, maxval=50.0, step=1.0, group=volBoxGroup)
+vpBoxColor  = input.color(color.new(#ffffff, 80), "Box Fill", group=volBoxGroup)
 
-// reset per bar
-bearConfirmedSignal := false
-bullConfirmedSignal := false
+// считаем профиль только если ТФ графика по времени от 15м до 4ч
+vpBarMs   = bar_index > 0 ? (time - time[1]) : na      // длительность бара в мс
+vpBarMin  = not na(vpBarMs) ? vpBarMs / 60000.0 : na   // длительность бара в минутах
+vpAllowedTF = not na(vpBarMin) and vpBarMin >= 15 and vpBarMin <= 240
 
-// Pivot High (bear)
-if not na(phCalc) and not na(phHistPivot)
-    bool bearConfirmed = not na(lastPHPrice) and phCalc > lastPHPrice and phHistPivot < lastPHHist
 
-    // update refs ALWAYS (so forming/cont can work even when showConfirmed=false)
-    lastPHPrice := phCalc
-    lastPHHist  := phHistPivot
-    bearForming := false
-    bearExtreme := na
+// HTF-данные (4H и т.п.)
+[vpHtfH, vpHtfL, vpHtfT] = request.security(syminfo.tickerid, vpHtfTF, [high, low, time], lookahead=barmerge.lookahead_on)
 
-    if bearConfirmed
-        bearConfirmedSignal := true
+// состояние профиля
+var float[] vpBinsArr   = array.new_float()
+var box[]   vpBoxes     = array.new<box>()
+var int[]   vpBoxesEndT = array.new_int()
+var int     vpCurHtfT   = na
+var float   vpCurHigh   = na
+var float   vpCurLow    = na
+var int     vpLastBarT  = na
 
-        if preOnConfirm == "Delete"
-            bearPreLb := f_preClear(bearPreLb)
+vpResetBins() =>
+    if array.size(vpBinsArr) != vpBins
+        array.clear(vpBinsArr)
+        for j = 0 to vpBins - 1
+            array.push(vpBinsArr, 0.0)
+    else
+        for j = 0 to vpBins - 1
+            array.set(vpBinsArr, j, 0.0)
 
-        if showConfirmed
-            if confirmedMode == "Strict"
-                if strictOK
-                    f_makeLabel_bar(bar_index - right, high[right] + bearOffY, bearConfCol)
+vpFinalizeProfile() =>
+    if not na(vpCurHtfT) and not na(vpCurHigh) and not na(vpCurLow) and vpCurHigh > vpCurLow
+        float totalVol = 0.0
+        for j = 0 to vpBins - 1
+            totalVol += array.get(vpBinsArr, j)
+        if totalVol > 0.0
+            float maxVol = 0.0
+            int   pocIdx = 0
+            for j = 0 to vpBins - 1
+                float v = array.get(vpBinsArr, j)
+                if v > maxVol
+                    maxVol := v
+                    pocIdx := j
+            float targetVol = totalVol * vpVaVolPct / 100.0
+            float cumVol    = array.get(vpBinsArr, pocIdx)
+            int   leftIdx   = pocIdx
+            int   rightIdx  = pocIdx
+            while cumVol < targetVol and (leftIdx > 0 or rightIdx < vpBins - 1)
+                bool canLeft  = leftIdx > 0
+                bool canRight = rightIdx < vpBins - 1
+                float volLeft  = canLeft  ? array.get(vpBinsArr, leftIdx  - 1) : 0.0
+                float volRight = canRight ? array.get(vpBinsArr, rightIdx + 1) : 0.0
+                if canLeft and (not canRight or volLeft >= volRight)
+                    leftIdx -= 1
+                    cumVol  += volLeft
+                else if canRight
+                    rightIdx += 1
+                    cumVol  += volRight
+                else
+                    break
+
+            float priceRange = vpCurHigh - vpCurLow
+            float binSize    = priceRange / vpBins
+            float boxBot     = vpCurLow + binSize * leftIdx
+            float boxTop     = vpCurLow + binSize * (rightIdx + 1)
+
+            int   leftTime   = vpCurHtfT
+            int   rightTime  = na(vpLastBarT) ? time : vpLastBarT
+            int   lookbackMs = vpLookbackD * 24 * 60 * 60 * 1000
+            int   cutoffTime = timenow - lookbackMs
+
+            if rightTime >= cutoffTime
+                box b = box.new(leftTime, boxTop, rightTime, boxBot, xloc=xloc.bar_time, border_color=color.new(vpBoxColor, 100), bgcolor=vpBoxColor)
+                array.push(vpBoxes, b)
+                array.push(vpBoxesEndT, rightTime)
+
+            int k = 0
+            while k < array.size(vpBoxes)
+                if array.get(vpBoxesEndT, k) < cutoffTime
+                    box delB = array.get(vpBoxes, k)
+                    delB.delete()
+                    array.remove(vpBoxes, k)
+                    array.remove(vpBoxesEndT, k)
+                else
+                    k += 1
+
+// основная логика профиля
+if vpShowBox and vpAllowedTF
+    if na(vpCurHtfT)
+        vpCurHtfT := vpHtfT
+        vpCurHigh := vpHtfH
+        vpCurLow  := vpHtfL
+        vpResetBins()
+    else if vpHtfT != vpCurHtfT
+        vpFinalizeProfile()
+        vpCurHtfT := vpHtfT
+        vpCurHigh := vpHtfH
+        vpCurLow  := vpHtfL
+        vpResetBins()
+
+    vpLastBarT := time
+
+    if not na(vpCurLow) and vpCurHigh > vpCurLow and volume > 0
+        float priceRange = vpCurHigh - vpCurLow
+        float midPrice   = (high + low) * 0.5
+        float pos        = (midPrice - vpCurLow) / priceRange
+        pos := math.max(0.0, math.min(pos, 1.0))
+        int   idx   = int(math.floor(pos * (vpBins - 1)))
+        float oldV  = array.get(vpBinsArr, idx)
+        array.set(vpBinsArr, idx, oldV + volume)
+
+    if barstate.islast
+        vpFinalizeProfile()
+else
+    int k = 0
+    while k < array.size(vpBoxes)
+        array.get(vpBoxes, k).delete()
+        k += 1
+    array.clear(vpBoxes)
+    array.clear(vpBoxesEndT)
+    vpCurHtfT := na
+
+
+// === TRENDLINES: настройки UI ===
+enableTrendUpper = input.bool(true, "Show Upper Trendline", group=trendGroup)
+enableTrendLower = input.bool(true, "Show Lower Trendline", group=trendGroup)
+pivotLeft = input.int(5, "Pivot Left", minval=1, group=trendGroup)
+pivotRight = input.int(5, "Pivot Right", minval=1, group=trendGroup)
+trendSourceMode = input.string("Wicks", "Price Source", options=["Wicks", "Bodies"], group=trendGroup)
+showSp123Labels = input.bool(true, "Show 1-2-3 Labels", group=trendGroup)
+showSp123Lines  = input.bool(true, "Show 1-2-3 Zigzag", group=trendGroup)
+
+// === TRENDLINES: логика построения (Sperandeo) ===
+bodyHigh = math.max(open, close)
+bodyLow = math.min(open, close)
+trendHighSrc = trendSourceMode == "Wicks" ? high : bodyHigh
+trendLowSrc = trendSourceMode == "Wicks" ? low : bodyLow
+
+
+trendLineColor = color.new(#b8b8b8, 0)
+histTrendColor = color.new(#000000, 0)
+trendLineWidth = 2
+
+pivHighVal = ta.pivothigh(trendHighSrc, pivotLeft, pivotRight)
+pivLowVal = ta.pivotlow(trendLowSrc, pivotLeft, pivotRight)
+pivHighBar = not na(pivHighVal) ? bar_index - pivotRight : na
+pivLowBar = not na(pivLowVal) ? bar_index - pivotRight : na
+
+var float swingHigh1 = na
+var float swingHigh2 = na
+var int swingHighBar1 = na
+var int swingHighBar2 = na
+var line downTrendLine = na
+
+var float swingLow1 = na
+var float swingLow2 = na
+var int swingLowBar1 = na
+var int swingLowBar2 = na
+var line upTrendLine = na
+var float downSlope = na
+var float upSlope = na
+var bool downBroken = false
+var bool upBroken = false
+trendForwardBars = 48
+
+if not na(pivHighVal)
+    swingHigh2 := swingHigh1
+    swingHighBar2 := swingHighBar1
+    swingHigh1 := pivHighVal
+    swingHighBar1 := pivHighBar
+    if enableTrendUpper and not na(swingHigh2) and swingHigh1 < swingHigh2
+        if not na(downTrendLine)
+            if downBroken
+                line.set_extend(downTrendLine, extend.none)
+                line.set_color(downTrendLine, histTrendColor)
+                line.set_width(downTrendLine, 2)
             else
-                if not na(phTimePivot) and phTimePivot != lastBearPivotTime
-                    lastBearPivotTime := phTimePivot
-                    f_makeLabel_time(phTimePivot, phCalc + bearOffY, bearConfCol)
+                line.delete(downTrendLine)
+        float dxHigh = float(swingHighBar1 - swingHighBar2)
+        downSlope := dxHigh != 0.0 ? (swingHigh1 - swingHigh2) / dxHigh : 0.0
+        downBroken := false
+        int x2High = bar_index + trendForwardBars
+        float y2High = swingHigh1 + downSlope * float(x2High - swingHighBar1)
+        downTrendLine := line.new(swingHighBar2, swingHigh2, x2High, y2High, xloc=xloc.bar_index, extend=extend.none, color=trendLineColor, width=trendLineWidth)
 
-
-// Pivot Low (bull)
-if not na(plCalc) and not na(plHistPivot)
-    bool bullConfirmed = not na(lastPLPrice) and plCalc < lastPLPrice and plHistPivot > lastPLHist
-
-    // update refs ALWAYS
-    lastPLPrice := plCalc
-    lastPLHist  := plHistPivot
-    bullForming := false
-    bullExtreme := na
-
-    if bullConfirmed
-        bullConfirmedSignal := true
-
-        if preOnConfirm == "Delete"
-            bullPreLb := f_preClear(bullPreLb)
-
-        if showConfirmed
-            if confirmedMode == "Strict"
-                if strictOK
-                    f_makeLabel_bar(bar_index - right, low[right] - bullOffY, bullConfCol)
+if not na(pivLowVal)
+    swingLow2 := swingLow1
+    swingLowBar2 := swingLowBar1
+    swingLow1 := pivLowVal
+    swingLowBar1 := pivLowBar
+    if enableTrendLower and not na(swingLow2) and swingLow1 > swingLow2
+        if not na(upTrendLine)
+            if upBroken
+                line.set_extend(upTrendLine, extend.none)
+                line.set_color(upTrendLine, histTrendColor)
+                line.set_width(upTrendLine, 2)
             else
-                if not na(plTimePivot) and plTimePivot != lastBullPivotTime
-                    lastBullPivotTime := plTimePivot
-                    f_makeLabel_time(plTimePivot, plCalc - bullOffY, bullConfCol)
+                line.delete(upTrendLine)
+        float dxLow = float(swingLowBar1 - swingLowBar2)
+        upSlope := dxLow != 0.0 ? (swingLow1 - swingLow2) / dxLow : 0.0
+        upBroken := false
+        int x2Low = bar_index + trendForwardBars
+        float y2Low = swingLow1 + upSlope * float(x2Low - swingLowBar1)
+        upTrendLine := line.new(swingLowBar2, swingLow2, x2Low, y2Low, xloc=xloc.bar_index, extend=extend.none, color=trendLineColor, width=trendLineWidth)
 
-alertcondition(
-     alertOnConfirmed and (bearConfirmedSignal or bullConfirmedSignal),
-     title="MACD Divergence Confirmed (Bull/Bear)",
-     message="Confirmed MACD divergence on {{ticker}} ({{interval}}). Close={{close}}"
-)
+// === TRENDLINES: сигналы ломки (Condition 1) ===
+downLinePrice = not na(downTrendLine) ? line.get_price(downTrendLine, bar_index) : na
+upLinePrice   = not na(upTrendLine)   ? line.get_price(upTrendLine,   bar_index) : na
 
+downBreak = enableTrendUpper and not downBroken and not na(downLinePrice) and ta.crossover(close, downLinePrice)
+upBreak   = enableTrendLower and not upBroken   and not na(upLinePrice)   and ta.crossunder(close, upLinePrice)
+
+// визуальные стрелки ломки тренда
+plotshape(downBreak, title="Trendline Break Long",  style=shape.triangleup,   location=location.belowbar, color=color.new(#ffffff, 0), size=size.tiny)
+plotshape(upBreak,   title="Trendline Break Short", style=shape.triangledown, location=location.abovebar, color=color.new(#ff7300, 0), size=size.tiny)
+
+// объединённое условие для алерта
+alertTrendBreakCond = (downBreak or upBreak) and barstate.isconfirmed
+
+
+// обрезаем трендовую на первом баре ломки и красим в чёрный
+if downBreak and not na(downTrendLine) and not downBroken and not na(downLinePrice)
+    line.set_x2(downTrendLine, bar_index)
+    line.set_y2(downTrendLine, downLinePrice)
+    line.set_color(downTrendLine, histTrendColor)
+    line.set_width(downTrendLine, 2)
+    downBroken := true
+
+if upBreak and not na(upTrendLine) and not upBroken and not na(upLinePrice)
+    line.set_x2(upTrendLine, bar_index)
+    line.set_y2(upTrendLine, upLinePrice)
+    line.set_color(upTrendLine, histTrendColor)
+    line.set_width(upTrendLine, 2)
+    upBroken := true
+
+if not downBroken and not na(downTrendLine) and not na(downSlope) and not na(swingHighBar1)
+    int x2DynHigh = bar_index + trendForwardBars
+    float y2DynHigh = swingHigh1 + downSlope * float(x2DynHigh - swingHighBar1)
+    line.set_x2(downTrendLine, x2DynHigh)
+    line.set_y2(downTrendLine, y2DynHigh)
+
+if not upBroken and not na(upTrendLine) and not na(upSlope) and not na(swingLowBar1)
+    int x2DynLow = bar_index + trendForwardBars
+    float y2DynLow = swingLow1 + upSlope * float(x2DynLow - swingLowBar1)
+    line.set_x2(upTrendLine, x2DynLow)
+    line.set_y2(upTrendLine, y2DynLow)
+
+// === SPERANDEO 1-2-3 PATTERN ===
+// цвета 1-2-3 (LONG / SHORT)
+spLongLabelBgColor  = color.new(#063f35, 000)
+spShortLabelBgColor = color.new(#521419, 000)
+spLabelTextColor    = color.new(#e0e0e0, 0)
+
+
+// LONG 1-2-3 (разворот вверх из даунтренда)
+var int   spLongState      = 0
+var float spLongP1         = na
+var float spLongP2         = na
+var float spLongP3         = na
+var int   spLongP1Bar      = na
+var int   spLongP2Bar      = na
+var int   spLongP3Bar      = na
+var float spLongPrevHigh   = na
+var int   spLongBreakBar   = na
+
+// SHORT 1-2-3 (разворот вниз из аптренда)
+var int   spShortState     = 0
+var float spShortP1        = na
+var float spShortP2        = na
+var float spShortP3        = na
+var int   spShortP1Bar     = na
+var int   spShortP2Bar     = na
+var int   spShortP3Bar     = na
+var float spShortPrevLow   = na
+var int   spShortBreakBar  = na
+
+var bool spLongPatternSignal  = false
+var bool spShortPatternSignal = false
+spLongPatternSignal  := false
+spShortPatternSignal := false
+
+// --- LONG 1-2-3 ---
+if downBreak
+    spLongState    := 1
+    spLongP1       := swingLow1
+    spLongP1Bar    := swingLowBar1
+    spLongPrevHigh := swingHigh1
+    spLongBreakBar := bar_index
+    spLongP2       := na
+    spLongP3       := na
+
+if spLongState == 1 and not na(pivHighVal) and pivHighBar > spLongBreakBar and not na(spLongPrevHigh) and pivHighVal > spLongPrevHigh
+    spLongState := 2
+    spLongP2    := pivHighVal
+    spLongP2Bar := pivHighBar
+
+if spLongState == 2 and not na(pivLowVal) and pivLowBar > spLongP2Bar and not na(spLongP1) and pivLowVal > spLongP1
+    spLongState          := 0
+    spLongP3             := pivLowVal
+    spLongP3Bar          := pivLowBar
+    spLongPatternSignal  := true
+    if showSp123Labels and not na(spLongP1) and not na(spLongP1Bar)
+        label.new(spLongP1Bar, spLongP1, "1L", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up,   color=spLongLabelBgColor, textcolor=spLabelTextColor, size=size.tiny)
+    if showSp123Labels and not na(spLongP2) and not na(spLongP2Bar)
+        label.new(spLongP2Bar, spLongP2, "2L", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=spLongLabelBgColor, textcolor=spLabelTextColor, size=size.tiny)
+    if showSp123Labels and not na(spLongP3) and not na(spLongP3Bar)
+        label.new(spLongP3Bar, spLongP3, "3L", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up,   color=spLongLabelBgColor, textcolor=spLabelTextColor, size=size.tiny)
+
+
+// --- SHORT 1-2-3 ---
+if upBreak
+    spShortState   := 1
+    spShortP1      := swingHigh1
+    spShortP1Bar   := swingHighBar1
+    spShortPrevLow := swingLow1
+    spShortBreakBar:= bar_index
+    spShortP2      := na
+    spShortP3      := na
+
+if spShortState == 1 and not na(pivLowVal) and pivLowBar > spShortBreakBar and not na(spShortPrevLow) and pivLowVal < spShortPrevLow
+    spShortState := 2
+    spShortP2    := pivLowVal
+    spShortP2Bar := pivLowBar
+
+if spShortState == 2 and not na(pivHighVal) and pivHighBar > spShortP2Bar and not na(spShortP1) and pivHighVal < spShortP1
+    spShortState         := 0
+    spShortP3            := pivHighVal
+    spShortP3Bar         := pivHighBar
+    spShortPatternSignal := true
+    if showSp123Labels and not na(spShortP1) and not na(spShortP1Bar)
+        label.new(spShortP1Bar, spShortP1, "1S", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=spShortLabelBgColor, textcolor=spLabelTextColor, size=size.tiny)
+    if showSp123Labels and not na(spShortP2) and not na(spShortP2Bar)
+        label.new(spShortP2Bar, spShortP2, "2S", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up,   color=spShortLabelBgColor, textcolor=spLabelTextColor, size=size.tiny)
+    if showSp123Labels and not na(spShortP3) and not na(spShortP3Bar)
+        label.new(spShortP3Bar, spShortP3, "3S", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=spShortLabelBgColor, textcolor=spLabelTextColor, size=size.tiny)
+
+
+// LONG debug-lines
+if showSp123Lines and spLongPatternSignal and not na(spLongP1Bar) and not na(spLongP2Bar) and not na(spLongP3Bar)
+    line.new(spLongP1Bar, spLongP1, spLongP2Bar, spLongP2, xloc=xloc.bar_index, extend=extend.none, color=color.new(#063f35, 0), width=1)
+    line.new(spLongP2Bar, spLongP2, spLongP3Bar, spLongP3, xloc=xloc.bar_index, extend=extend.none, color=color.new(#063f35, 0), width=1)
+
+// SHORT debug-lines
+if showSp123Lines and spShortPatternSignal and not na(spShortP1Bar) and not na(spShortP2Bar) and not na(spShortP3Bar)
+    line.new(spShortP1Bar, spShortP1, spShortP2Bar, spShortP2, xloc=xloc.bar_index, extend=extend.none, color=color.new(#521419, 0), width=1)
+    line.new(spShortP2Bar, spShortP2, spShortP3Bar, spShortP3, xloc=xloc.bar_index, extend=extend.none, color=color.new(#521419, 0), width=1)
+
+
+// объединённый сигнал для алерта
+alert123Cond = (spLongPatternSignal or spShortPatternSignal) and barstate.isconfirmed
+
+// === MACD: числовые настройки ===
+macdFastLenInput = input.float(12.0, "Fast Length", minval=1.0, step=0.5, group=macdGroup)
+macdSlowLenInput = input.float(26.0, "Slow Length", minval=1.0, step=0.5, group=macdGroup)
+macdSignalLenInput = input.float(9.0, "Signal Length", minval=1.0, step=0.5, group=macdGroup)
+macdSrc = input.source(close, "Source", group=macdGroup)
+macdFastLen = int(math.round(macdFastLenInput))
+macdSlowLen = int(math.round(macdSlowLenInput))
+macdSignalLen = int(math.round(macdSignalLenInput))
+macdFastEma = ta.ema(macdSrc, macdFastLen)
+macdSlowEma = ta.ema(macdSrc, macdSlowLen)
+macdValue = macdFastEma - macdSlowEma
+macdSignal = ta.ema(macdValue, macdSignalLen)
+macdHist = macdValue - macdSignal
+macdLongCrossCore = ta.crossover(macdValue, macdSignal)
+macdShortCrossCore = ta.crossunder(macdValue, macdSignal)
+macdLongCrossAboveZero = macdLongCrossCore and macdValue > 0 and macdSignal > 0
+macdShortCrossBelowZero = macdShortCrossCore and macdValue < 0 and macdSignal < 0
+macdLongCrossOnly = macdLongCrossCore and not macdLongCrossAboveZero
+macdShortCrossOnly = macdShortCrossCore and not macdShortCrossBelowZero
+plotshape(macdLongCrossOnly, title="MACD Long Cross", style=shape.cross, location=location.belowbar, color=color.new(#1fd3a9, 0), size=size.small)
+plotshape(macdShortCrossOnly, title="MACD Short Cross", style=shape.cross, location=location.abovebar, color=color.new(#c61111, 0), size=size.small)
+plotshape(macdLongCrossAboveZero, title="MACD Long Text", text="▲ 0", style=shape.labelup, location=location.belowbar, color=color.new(#c51212, 100), textcolor=color.new(#0f8a73, 0), size=size.tiny)
+plotshape(macdShortCrossBelowZero, title="MACD Short Text", text="▼ 0", style=shape.labeldown, location=location.abovebar, color=color.new(#00fff2, 100), textcolor=color.new(#c12020, 0), size=size.tiny)
+///сигналы///
+alertCrossCond = (macdLongCrossCore or macdShortCrossCore) and barstate.isconfirmed
+
+
+// === STOP сигналы по MACD крестам ===
+stopLookbackBars = input.int(10, "STOP Lookback Bars", minval=1, maxval=200, group=stopGroup)
+stopOffsetTicks = input.float(2.0, "STOP Offset (ticks)", minval=0.0, step=0.5, group=stopGroup)
+stopColor = input.color(#000000, "STOP Color", group=stopGroup)
+stopStyleOpt = input.string("circle", "STOP Style", options=["circle", "square", "cross"], group=stopGroup)
+stopStyle = stopStyleOpt == "circle" ? label.style_circle : stopStyleOpt == "square" ? label.style_label_center : label.style_cross
+
+stopLongCond = macdLongCrossCore
+stopShortCond = macdShortCrossCore
+
+if stopLongCond
+    float minPrice = na
+    int minShift = na
+    for i = 1 to stopLookbackBars
+        curLow = low[i]
+        if not na(curLow) and (na(minPrice) or curLow < minPrice)
+            minPrice := curLow
+            minShift := i
+    if not na(minPrice) and not na(minShift)
+        label.new(bar_index - minShift, minPrice - stopOffsetTicks * syminfo.mintick, "", xloc=xloc.bar_index, yloc=yloc.price, style=stopStyle, color=stopColor, textcolor=stopColor, size=size.tiny)
+
+if stopShortCond
+    float maxPrice = na
+    int maxShift = na
+    for i = 1 to stopLookbackBars
+        curHigh = high[i]
+        if not na(curHigh) and (na(maxPrice) or curHigh > maxPrice)
+            maxPrice := curHigh
+            maxShift := i
+    if not na(maxPrice) and not na(maxShift)
+        label.new(bar_index - maxShift, maxPrice + stopOffsetTicks * syminfo.mintick, "", xloc=xloc.bar_index, yloc=yloc.price, style=stopStyle, color=stopColor, textcolor=stopColor, size=size.tiny)
+
+// === PATTERNS: settings ===
+showDouble     = input.bool(true, "Show Double Top/Bottom",       group="Patterns")
+showHeadShould = input.bool(true, "Show Head & Shoulders (top)",  group="Patterns")
+dtTolerancePct = input.float(1.0, "DT/DB Price Tolerance (%)",    minval=0.1, maxval=5.0, step=0.1, group="Patterns")
+dtMinBars      = input.int(5,    "DT/DB Min Bars Between Tops",   minval=1, group="Patterns")
+hsShoulderPct  = input.float(2.0,"H&S Shoulders Tolerance (%)",   minval=0.5, maxval=10.0, step=0.5, group="Patterns")
+hsHeadExtraPct = input.float(1.0,"H&S Head Higher Than Shoulders (%)", minval=0.5, maxval=10.0, step=0.5, group="Patterns")
+
+patternColor         = color.new(#3664b3, 0)
+patternLabelBgColor  = patternColor
+patternLabelTxtColor = color.new(#e0e0e0, 0)
+patternOffsetTicks   = 30.0
+
+dtTol         = dtTolerancePct * 0.01
+hsShoulderTol = hsShoulderPct  * 0.01
+hsHeadExtra   = hsHeadExtraPct * 0.01
+
+offsetPx(x) => x + patternOffsetTicks * syminfo.mintick
+offsetNx(x) => x - patternOffsetTicks * syminfo.mintick
+
+
+// === DOUBLE TOP / DOUBLE BOTTOM ===
+
+// Double Top state
+var int   dtState     = 0
+var float dtH1Val     = na
+var float dtNeckVal   = na
+var float dtH2Val     = na
+var int   dtH1Bar     = na
+var int   dtNeckBar   = na
+var int   dtH2Bar     = na
+bool      dtConfirmed = false
+dtConfirmed := false
+
+// Double Bottom state
+var int   dbState     = 0
+var float dbL1Val     = na
+var float dbNeckVal   = na
+var float dbL2Val     = na
+var int   dbL1Bar     = na
+var int   dbNeckBar   = na
+var int   dbL2Bar     = na
+bool      dbConfirmed = false
+dbConfirmed := false
+
+// --- Double Top: H1 -> L -> H2 ≈ H1, затем пробой L ---
+if showDouble and not na(pivHighVal)
+    if dtState == 0
+        dtState := 1
+        dtH1Val := pivHighVal
+        dtH1Bar := pivHighBar
+    else if dtState == 2 and pivHighBar > dtNeckBar and pivHighBar - dtNeckBar >= dtMinBars and math.abs(pivHighVal - dtH1Val) / dtH1Val <= dtTol
+        dtState   := 3
+        dtH2Val   := pivHighVal
+        dtH2Bar   := pivHighBar
+    else
+        dtState := 1
+        dtH1Val := pivHighVal
+        dtH1Bar := pivHighBar
+
+if showDouble and not na(pivLowVal)
+    if dtState == 1 and pivLowBar > dtH1Bar
+        dtState    := 2
+        dtNeckVal  := pivLowVal
+        dtNeckBar  := pivLowBar
+
+if showDouble and dtState == 3 and barstate.isconfirmed and close < dtNeckVal
+    dtConfirmed := true
+    dtState     := 0
+
+if showDouble and dtConfirmed and not na(dtH1Val) and not na(dtH2Val) and not na(dtNeckVal)
+    label.new(dtH2Bar, offsetPx(dtH2Val), "DT", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=patternLabelBgColor, textcolor=patternLabelTxtColor, size=size.tiny)
+
+
+// --- Double Bottom: L1 -> H -> L2 ≈ L1, затем пробой H ---
+if showDouble and not na(pivLowVal)
+    if dbState == 0
+        dbState := 1
+        dbL1Val := pivLowVal
+        dbL1Bar := pivLowBar
+    else if dbState == 2 and pivLowBar > dbNeckBar and pivLowBar - dbNeckBar >= dtMinBars and math.abs(pivLowVal - dbL1Val) / dbL1Val <= dtTol
+        dbState   := 3
+        dbL2Val   := pivLowVal
+        dbL2Bar   := pivLowBar
+    else
+        dbState := 1
+        dbL1Val := pivLowVal
+        dbL1Bar := pivLowBar
+
+if showDouble and not na(pivHighVal)
+    if dbState == 1 and pivHighBar > dbL1Bar
+        dbState    := 2
+        dbNeckVal  := pivHighVal
+        dbNeckBar  := pivHighBar
+
+if showDouble and dbState == 3 and barstate.isconfirmed and close > dbNeckVal
+    dbConfirmed := true
+    dbState     := 0
+
+if showDouble and dbConfirmed and not na(dbL1Val) and not na(dbL2Val) and not na(dbNeckVal)
+    label.new(dbL2Bar, offsetNx(dbL2Val), "DB", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up, color=patternLabelBgColor, textcolor=patternLabelTxtColor, size=size.tiny)
+
+// === HEAD & SHOULDERS (top) ===
+var int   hsState     = 0
+var float hsLSVal     = na
+var float hsL1Val     = na
+var float hsHeadVal   = na
+var float hsL2Val     = na
+var float hsRSVal     = na
+var int   hsLSBar     = na
+var int   hsL1Bar     = na
+var int   hsHeadBar   = na
+var int   hsL2Bar     = na
+var int   hsRSBar     = na
+bool      hsConfirmed = false
+hsConfirmed := false
+
+// LS, HEAD, RS
+if showHeadShould and not na(pivHighVal)
+    if hsState == 0
+        hsState   := 1
+        hsLSVal   := pivHighVal
+        hsLSBar   := pivHighBar
+    else if hsState == 2 and pivHighBar > hsL1Bar and pivHighVal > hsLSVal * (1.0 + hsHeadExtra)
+        hsState    := 3
+        hsHeadVal  := pivHighVal
+        hsHeadBar  := pivHighBar
+    else if hsState == 4 and pivHighBar > hsL2Bar
+        bool shoulderOk = math.abs(pivHighVal - hsLSVal) / hsHeadVal <= hsShoulderTol and pivHighVal < hsHeadVal
+        if shoulderOk
+            hsState  := 5
+            hsRSVal  := pivHighVal
+            hsRSBar  := pivHighBar
+        else
+            hsState  := 1
+            hsLSVal  := pivHighVal
+            hsLSBar  := pivHighBar
+
+// L1, L2
+if showHeadShould and not na(pivLowVal)
+    if hsState == 1 and pivLowBar > hsLSBar
+        hsState  := 2
+        hsL1Val  := pivLowVal
+        hsL1Bar  := pivLowBar
+    else if hsState == 3 and pivLowBar > hsHeadBar
+        hsState  := 4
+        hsL2Val  := pivLowVal
+        hsL2Bar  := pivLowBar
+
+// пробой шеи
+if showHeadShould and hsState == 5 and not na(hsL1Val) and not na(hsL2Val)
+    float hsNeck = math.avg(hsL1Val, hsL2Val)
+    if barstate.isconfirmed and close < hsNeck
+        hsConfirmed := true
+        hsState     := 0
+
+if showHeadShould and hsConfirmed and not na(hsLSVal) and not na(hsHeadVal) and not na(hsRSVal) and not na(hsL1Val) and not na(hsL2Val)
+    label.new(hsHeadBar, offsetPx(hsHeadVal), "HS", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=patternLabelBgColor, textcolor=patternLabelTxtColor, size=size.tiny)
+
+
+
+// === Bollinger Bands ===
+bbLength = int(math.round(bbLengthInput))
+bbBasis  = ta.sma(bbSrc, bbLength)
+bbDev    = ta.stdev(bbSrc, bbLength)
+bbUpper  = bbBasis + bbDev * bbMult
+bbLower  = bbBasis - bbDev * bbMult
+bbBasisPlot = plot(bbBasis, title="BB Basis", color=#9c9c9c, linewidth=2)
+bbUpperPlot = plot(bbUpper, title="BB Upper", color=#7b7b7b, linewidth=1)
+bbLowerPlot = plot(bbLower, title="BB Lower", color=#7b7b7b, linewidth=1)
+
+// пересечения цены со средней BB
+bbCrossDown = ta.crossunder(close, bbBasis)
+bbCrossUp   = ta.crossover(close, bbBasis)
+
+// цена в точке пересечения
+bbCrossDownPrice = bbCrossDown ? bbBasis : na
+bbCrossUpPrice   = bbCrossUp   ? bbBasis : na
+
+// лейблы прямо на средней линии
+plotshape(series = bbShowLabels and not na(bbCrossDownPrice) ? bbCrossDownPrice : na, title="BB Basis Cross Down", style=shape.labeldown, location=location.absolute, color=color.new(#801922, 0), text="⬇︎", textcolor=color.new(color.white, 0), size=size.tiny)
+plotshape(series = bbShowLabels and not na(bbCrossUpPrice)   ? bbCrossUpPrice   : na, title="BB Basis Cross Up",   style=shape.labelup,   location=location.absolute, color=color.new(#0a6250, 0), text="⬆︎", textcolor=color.new(color.white, 0), size=size.tiny)
+
+
+// === RSI + EMA + WMA по RSI ===
+rsiLengthInput = input.float(14.0, "RSI Length", minval=1.0, step=0.5, group=rsiGroup)
+rsiSrc = input.source(close, "RSI Source", group=rsiGroup)
+rsiEmaLenInput = input.float(9.0, "RSI EMA Length", minval=1.0, step=0.5, group=rsiGroup)
+rsiWmaLenInput = input.float(35.0, "RSI WMA Length", minval=1.0, step=0.5, group=rsiGroup)
+rsiMaxLow = input.float(66.0, "RSI MAX Range Low", minval=0.0, maxval=100.0, step=0.5, group=rsiGroup)
+rsiMaxHigh = input.float(90.0, "RSI MAX Range High", minval=0.0, maxval=100.0, step=0.5, group=rsiGroup)
+rsiMinLow = input.float(10.0, "RSI MIN Range Low", minval=0.0, maxval=100.0, step=0.5, group=rsiGroup)
+rsiMinHigh = input.float(38.0, "RSI MIN Range High", minval=0.0, maxval=100.0, step=0.5, group=rsiGroup)
+maxLabelBgColor = input.color(color.new(#ff5252, 100), "MAX Label BG", group=rsiGroup)
+maxLabelTextColor = input.color(color.new(#000000, 0), "MAX Label Text", group=rsiGroup)
+minLabelBgColor = input.color(color.new(#4caf4f, 100), "MIN Label BG", group=rsiGroup)
+minLabelTextColor = input.color(color.new(#dedede, 0), "MIN Label Text", group=rsiGroup)
+rsiLength = int(math.round(rsiLengthInput))
+rsiEmaLen = int(math.round(rsiEmaLenInput))
+rsiWmaLen = int(math.round(rsiWmaLenInput))
+rsiValue = ta.rsi(rsiSrc, rsiLength)
+rsiEma = ta.ema(rsiValue, rsiEmaLen)
+rsiWmaRsi = ta.wma(rsiValue, rsiWmaLen)
+rsiInMaxRange = rsiValue >= rsiMaxLow and rsiValue <= rsiMaxHigh
+rsiInMinRange = rsiValue >= rsiMinLow and rsiValue <= rsiMinHigh
+rsiAboveEmaWma = rsiValue > rsiEma and rsiValue > rsiWmaRsi
+rsiBelowEmaWma = rsiValue < rsiEma and rsiValue < rsiWmaRsi
+closeAboveWmaUpperAndBbUpper = close > wmaUpperBand and close > bbUpper
+closeBelowWmaLowerAndBbLower = close < wmaLowerBand and close < bbLower
+maxCond = rsiInMaxRange and rsiAboveEmaWma and closeAboveWmaUpperAndBbUpper
+minCond = rsiInMinRange and rsiBelowEmaWma and closeBelowWmaLowerAndBbLower
+plotshape(maxCond, title="RSI MAX Label", text="MAX", style=shape.labeldown, location=location.abovebar, color=maxLabelBgColor, textcolor=maxLabelTextColor, size=size.tiny)
+plotshape(minCond, title="RSI MIN Label", text="MIN", style=shape.labelup, location=location.belowbar, color=minLabelBgColor, textcolor=minLabelTextColor, size=size.tiny)
+///сигналы///
+alertRsiExtremaCond = (maxCond or minCond) and barstate.isconfirmed
+
+// === HTF TRENDLINES 2.0 (по телам / фитилям свечей старшего ТФ) ===
+
+// перевод строки стиля в line.style
+htfLineStyle = htfLineStyleStr == "Dashed" ? line.style_dashed : htfLineStyleStr == "Dotted" ? line.style_dotted : line.style_solid
+
+// --- данные старшего ТФ ---
+[htfO, htfH, htfL, htfC] = request.security(syminfo.tickerid, htfTrendTF, [open, high, low, close], lookahead=barmerge.lookahead_on)
+float htfSrcHighBodies = math.max(htfO, htfC)
+float htfSrcLowBodies  = math.min(htfO, htfC)
+float htfSrchRaw       = htfTrendSourceMode == "Bodies" ? htfSrcHighBodies : htfH
+float htfSrclRaw       = htfTrendSourceMode == "Bodies" ? htfSrcLowBodies  : htfL
+int   htfSm            = htfNoiseReduction + 1
+float htfSRCH          = ta.ema(htfSrchRaw, htfSm)
+float htfSRCL          = ta.ema(htfSrclRaw, htfSm)
+
+
+// --- результаты поиска (глобальные переменные) ---
+var float htfH1 = na
+var float htfH2 = na
+var float htfL1 = na
+var float htfL2 = na
+
+var int   htfTh1 = na
+var int   htfTh2 = na
+var int   htfTl1 = na
+var int   htfTl2 = na
+
+float htfA1 = na
+float htfA2 = na
+int   htfTa1 = na
+int   htfTa2 = na
+
+int htfGap   = 2
+int htfMxEff = math.min(htfMaxRange, bar_index > htfGap ? bar_index - htfGap : htfMaxRange)
+
+// --- основной алгоритм поиска экстремумов ---
+if htfTrendEnable and bar_index > htfMxEff + htfGap
+    float hhh = 0.0, lll = 1e12
+    float h1 = hhh, h2 = hhh, l1 = lll, l2 = lll
+    int th1 = 0, th2 = 0, tl1 = 0, tl2 = 0
+
+    int rangeMain = htfMxEff  // диапазон для основного цикла
+
+    // 1) самые дальние экстремумы в окне (идём «назад» с положительным шагом)
+    for n = 0 to rangeMain
+        int i = htfMxEff + htfGap - n
+        h1 := math.max(h1, htfSRCH[i])
+        if h1 == htfSRCH[i]
+            th1 := i
+        l1 := math.min(l1, htfSRCL[i])
+        if l1 == htfSRCL[i]
+            tl1 := i
+
+    // 2) ближайшие экстремумы внутри канала
+    for n = 0 to rangeMain
+        int i = htfMxEff + htfGap - n
+        if i < math.min(tl1, th1 / 2)
+            h2 := math.max(h2, htfSRCH[i])
+            if h2 == htfSRCH[i]
+                th2 := i
+        if i < math.min(th1, tl1 / 2)
+            l2 := math.min(l2, htfSRCL[i])
+            if l2 == htfSRCL[i]
+                tl2 := i
+
+    // 3) резервный поиск
+    if th1 <= htfGap
+        h1 := hhh, th1 := 0
+        int s1 = htfMxEff + htfGap
+        int e1 = math.round(htfMxEff / 1.4669) + htfGap
+        int r1 = math.max(s1 - e1, 0)
+        for n = 0 to r1
+            int i = s1 - n
+            h1 := math.max(h1, htfSRCH[i])
+            if h1 == htfSRCH[i]
+                th1 := i
+
+    if tl1 <= htfGap
+        l1 := lll, tl1 := 0
+        int s2 = htfMxEff + htfGap
+        int e2 = math.round(htfMxEff / 1.4669) + htfGap
+        int r2 = math.max(s2 - e2, 0)
+        for n = 0 to r2
+            int i = s2 - n
+            l1 := math.min(l1, htfSRCL[i])
+            if l1 == htfSRCL[i]
+                tl1 := i
+
+    if th2 <= htfGap
+        h2 := hhh, th2 := 0
+        int e3 = math.round(htfMxEff / 2.9338) + htfGap
+        for i = htfGap to e3
+            h2 := math.max(h2, htfSRCH[i])
+            if h2 == htfSRCH[i]
+                th2 := i
+
+    if tl2 <= htfGap
+        l2 := lll, tl2 := 0
+        int e4 = math.round(htfMxEff / 2.9338) + htfGap
+        for i = htfGap to e4
+            l2 := math.min(l2, htfSRCL[i])
+            if l2 == htfSRCL[i]
+                tl2 := i
+
+    // центры каналов
+    htfA1  := math.avg(h1, l1)
+    htfTa1 := math.round(math.avg(th1, tl1))
+    htfA2  := math.avg(h2, l2)
+    htfTa2 := math.round(math.avg(th2, tl2))
+
+    // сохраняем в var-переменные
+    htfH1  := h1, htfH2  := h2
+    htfL1  := l1, htfL2  := l2
+    htfTh1 := th1, htfTh2 := th2
+    htfTl1 := tl1, htfTl2 := tl2
+else
+    htfA1 := na, htfA2 := na
+
+// --- линии на графике ---
+var line htfResLine = na
+var line htfSupLine = na
+
+if htfTrendEnable and not na(htfA1) and not na(htfA2)
+    // ----- БАЗОВЫЕ ТОЧКИ ТРЕНДОВОЙ (СОЕДИНЯЮЩЕЙ ЭКСТРЕМУМЫ) -----
+
+    // сопротивление (верхняя линия)
+    int   rx1 = bar_index - htfTh1
+    int   rx2 = bar_index - htfTh2
+    float ry1 = htfH1
+    float ry2 = htfH2
+
+    // гарантируем, что rx1 < rx2 и «подвязываем» Y к X
+    if rx1 > rx2
+        int   tmpX = rx1
+        float tmpY = ry1
+        rx1 := rx2
+        ry1 := ry2
+        rx2 := tmpX
+        ry2 := tmpY
+
+    float dxR = rx2 - rx1
+    float kR  = dxR != 0 ? (ry2 - ry1) / dxR : 0.0    // наклон линии
+
+    // новые точки с расширением влево/вправо на htfExtendBars
+    int   x1R = rx1 - htfExtendBars
+    int   x2R = rx2 + htfExtendBars
+    float y1R = ry1 - kR * htfExtendBars
+    float y2R = ry2 + kR * htfExtendBars
+
+    // поддержка (нижняя линия)
+    int   sx1 = bar_index - htfTl1
+    int   sx2 = bar_index - htfTl2
+    float sy1 = htfL1
+    float sy2 = htfL2
+
+    if sx1 > sx2
+        int   tmpX2 = sx1
+        float tmpY2 = sy1
+        sx1 := sx2
+        sy1 := sy2
+        sx2 := tmpX2
+        sy2 := tmpY2
+
+    float dxS = sx2 - sx1
+    float kS  = dxS != 0 ? (sy2 - sy1) / dxS : 0.0
+
+    int   x1S = sx1 - htfExtendBars
+    int   x2S = sx2 + htfExtendBars
+    float y1S = sy1 - kS * htfExtendBars
+    float y2S = sy2 + kS * htfExtendBars
+
+    // ----- РИСУЕМ / ОБНОВЛЯЕМ ЛИНИИ -----
+
+    // сопротивление
+    if htfShowRes and htfTh1 > 0 and htfTh2 > 0
+        if na(htfResLine)
+            htfResLine := line.new(x1R, y1R, x2R, y2R, xloc = xloc.bar_index, extend = extend.none, color = htfResColor, width = htfLineWidth, style = htfLineStyle)
+        else
+            line.set_xy1(htfResLine, x1R, y1R)
+            line.set_xy2(htfResLine, x2R, y2R)
+            line.set_color(htfResLine, htfResColor)
+            line.set_width(htfResLine, htfLineWidth)
+            line.set_style(htfResLine, htfLineStyle)
+    else
+        if not na(htfResLine)
+            line.delete(htfResLine)
+            htfResLine := na
+
+    // поддержка
+    if htfShowSup and htfTl1 > 0 and htfTl2 > 0
+        if na(htfSupLine)
+            htfSupLine := line.new(x1S, y1S, x2S, y2S, xloc = xloc.bar_index, extend = extend.none, color = htfSupColor, width = htfLineWidth, style = htfLineStyle)
+        else
+            line.set_xy1(htfSupLine, x1S, y1S)
+            line.set_xy2(htfSupLine, x2S, y2S)
+            line.set_color(htfSupLine, htfSupColor)
+            line.set_width(htfSupLine, htfLineWidth)
+            line.set_style(htfSupLine, htfLineStyle)
+    else
+        if not na(htfSupLine)
+            line.delete(htfSupLine)
+            htfSupLine := na
+else
+    if not na(htfResLine)
+        line.delete(htfResLine)
+        htfResLine := na
+    if not na(htfSupLine)
+        line.delete(htfSupLine)
+        htfSupLine := na
+
+
+// === DIVERGENCE (линии между экстремумами) ===
+divFractalN = input.int(4, "Fractal Periods", minval=2, group=divGroup)
+divMaxDistance = input.int(30, "Max Bars Between Pivots", minval=1, group=divGroup)
+divHistType = input.string("MACD", "Divergence Method", options=["MACD","RSI","AO"], group=divGroup)
+divBearColor = input.color(color.new(color.red, 0), "Bear Div Color", group=divGroup)
+divBullColor = input.color(color.new(color.lime, 0), "Bull Div Color", group=divGroup)
+divBearWidth = input.int(2, "Bear Div Width", minval=1, maxval=10, group=divGroup)
+divBullWidth = input.int(2, "Bull Div Width", minval=1, maxval=10, group=divGroup)
+aoHist = ta.sma(hl2, 5) - ta.sma(hl2, 34)
+rsiAdj = rsiValue - 50
+float Hist = divHistType == "MACD" ? macdHist : divHistType == "AO" ? aoHist : rsiAdj
+upFractal = high[divFractalN] == ta.highest(high, divFractalN * 2 + 1)
+downFractal = low[divFractalN] == ta.lowest(low, divFractalN * 2 + 1)
+High_Last_Price = ta.valuewhen(upFractal, high[divFractalN], 0)
+High_Per_Price = ta.valuewhen(upFractal, high[divFractalN], 1)
+High_Last_Hist = ta.valuewhen(upFractal, Hist[divFractalN], 0)
+High_Per_Hist = ta.valuewhen(upFractal, Hist[divFractalN], 1)
+High_Last_Bar = ta.valuewhen(upFractal, bar_index[divFractalN], 0)
+High_Per_Bar = ta.valuewhen(upFractal, bar_index[divFractalN], 1)
+Time_Condition_Bear = (High_Last_Bar + divMaxDistance) > bar_index
+Last_Bearish_Divergence = High_Last_Hist > 0 and High_Per_Hist > 0 and Time_Condition_Bear and (High_Last_Bar - High_Per_Bar) < divMaxDistance and (High_Last_Price > High_Per_Price) and (High_Last_Hist < High_Per_Hist)
+Low_Last_Price = ta.valuewhen(downFractal, low[divFractalN], 0)
+Low_Per_Price = ta.valuewhen(downFractal, low[divFractalN], 1)
+Low_Last_Hist = ta.valuewhen(downFractal, Hist[divFractalN], 0)
+Low_Per_Hist = ta.valuewhen(downFractal, Hist[divFractalN], 1)
+Low_Last_Bar = ta.valuewhen(downFractal, bar_index[divFractalN], 0)
+Low_Per_Bar = ta.valuewhen(downFractal, bar_index[divFractalN], 1)
+Time_Condition_Bull = (Low_Last_Bar + divMaxDistance) > bar_index
+Last_Bullish_Divergence = Low_Last_Hist < 0 and Low_Per_Hist < 0 and Time_Condition_Bull and (Low_Last_Bar - Low_Per_Bar) < divMaxDistance and (Low_Last_Price < Low_Per_Price) and (Low_Last_Hist > Low_Per_Hist)
+bearDivSignal = ta.change(High_Last_Price) and Last_Bearish_Divergence
+bullDivSignal = ta.change(Low_Last_Price) and Last_Bullish_Divergence
+if bearDivSignal
+    line.new(High_Per_Bar, High_Per_Price, High_Last_Bar, High_Last_Price, xloc=xloc.bar_index, extend=extend.none, color=divBearColor, width=divBearWidth)
+
+if bullDivSignal
+    line.new(Low_Per_Bar, Low_Per_Price, Low_Last_Bar, Low_Last_Price, xloc=xloc.bar_index, extend=extend.none, color=divBullColor, width=divBullWidth)
+
+alertDivCond = (bearDivSignal or bullDivSignal) and barstate.isconfirmed
+
+///сигналы///
+alertOnCross       = input.bool(true,  "MACD Crosses",        group=alertsGroup)
+alertOnRsiExtrema  = input.bool(true,  "RSI MAX / MIN",       group=alertsGroup)
+alertOnDivergence  = input.bool(true,  "Divergences",         group=alertsGroup)
+alertOnTrendBreak  = input.bool(true,  "Trendline Breaks",    group=alertsGroup)
+alertOn123         = input.bool(true,  "Sperandeo 1-2-3",     group=alertsGroup)
+alertOnBbMidCross  = input.bool(true,  "BB Basis Crosses",    group=alertsGroup)
+
+// BB midline cross alert condition
+bbMidCrossCond = (bbCrossDown or bbCrossUp) and barstate.isconfirmed
+
+alertcondition(alertOnCross       and alertCrossCond,     "MACD Cross (any)",      "MACD: new cross (long or short)")
+alertcondition(alertOnRsiExtrema  and alertRsiExtremaCond,"RSI MAX/MIN",           "RSI: new MAX or MIN signal")
+alertcondition(alertOnDivergence  and alertDivCond,       "Divergence (any)",      "New bullish or bearish divergence")
+alertcondition(alertOnTrendBreak  and alertTrendBreakCond,"Trendline Break (any)", "Trendline broken (uptrend or downtrend)")
+alertcondition(alertOnBbMidCross  and bbMidCrossCond,     "BB Basis Cross (any)",  "Price crosses BB basis up or down")
+alertcondition(alertOn123         and alert123Cond,       "Sperandeo 1-2-3 (any)", "Sperandeo 1-2-3 pattern (long or short)")
+
+// --- НАСТРОЙКИ АЛЕРТОВ Stochastic---
+smAlertsGroup     = "Stoch+MFI Alerts"
+smEnableAlertAny  = input.bool(true,  "Alert: Any Buy/B or Sell/S",       group = smAlertsGroup)
+smEnableAlertBuy  = input.bool(false, "Alert: Only Buy/B",                group = smAlertsGroup)
+smEnableAlertSell = input.bool(false, "Alert: Only Sell/S",               group = smAlertsGroup)
+// --- УСЛОВИЯ АЛЕРТОВ ДЛЯ Stoch+MFI БЛОКА ---
+// те же сигналы, что и метки "B" / "S" на графике,
+// но срабатывают только на закрытии бара
+smAlertBuyCond  = smBuySignal  and barstate.isconfirmed
+smAlertSellCond = smSellSignal and barstate.isconfirmed
+smAlertAnyCond  = (smBuySignal or smSellSignal) and barstate.isconfirmed
+
+// --- САМИ ALERTCONDITION ---
+// 1) Любой сигнал (B или S) одним алертом
+alertcondition(  smEnableAlertAny and smAlertAnyCond, "Stoch+MFI: Any B/S", "Stoch+MFI block: new Buy (B) or Sell (S) signal" )
+
+// 2) Только Buy (B)
+alertcondition(  smEnableAlertBuy and smAlertBuyCond, "Stoch+MFI: Buy (B)", "Stoch+MFI block: new Buy (B) signal" )
+
+// 3) Только Sell (S)
+alertcondition(  smEnableAlertSell and smAlertSellCond,  "Stoch+MFI: Sell (S)", "Stoch+MFI block: new Sell (S) signal" )
